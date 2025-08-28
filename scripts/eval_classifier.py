@@ -18,7 +18,7 @@ import seaborn as sns
 from tqdm import tqdm
 
 # Import from training script
-from train_vit import ViTShipClassifier, ShipPatchDatast, get_augmentation_transforms
+from train_vit import ViTShipClassifier, ShipPatchDataset, get_augmentation_transforms
 
 
 def load_model(checkpoint_path: str, config: Dict) -> ViTShipClassifier:
