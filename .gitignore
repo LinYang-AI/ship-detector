@@ -208,5 +208,5 @@ __marimo__/
 
 .jpg
 uv.lock
-.pth
+*.pth
 data/
