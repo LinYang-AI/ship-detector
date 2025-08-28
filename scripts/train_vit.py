@@ -1,7 +1,7 @@
 import os
-import yaml
 import argparse
 from pathlib import Path
+import ruamel.yaml as yaml
 from typing import Dict, Any, Optional, Tuple
 
 import torch
@@ -151,7 +151,7 @@ class ViTShipClassifier(pl.LightningModule):
         
         return {'loss': loss, 'preds': preds, 'labels': labels, 'probs': probs}
     
-    def on_train_epoch_end(self):
+    def configure_optimizers(self):
         # Optimizer
         opt_config =self.hparams['optimizer']
         if opt_config['name'] == 'adam':
@@ -242,6 +242,7 @@ def get_augmentation_transforms(config: Dict[str, Any]) -> Tuple[transforms.Comp
         normalize
     ])
     
+    return train_transforms, val_transforms
     return transforms.Compose(train_transforms), transforms.Compose(val_transforms)
     
 
@@ -254,7 +255,8 @@ def create_data_loader(
     # Load manifest
     df = pd.read_csv(manifest_path)
     df['has_ship'] = df['EncodedPixels'].apply(lambda x: 0 if pd.isna(x) else 1)
-    
+    df['patch_path'] = df['ImageId'].apply(lambda x: f"data/airbus-ship-detection/train_v2/{x}")
+
     # Split data
     train_df, val_df = train_test_split(
         df,
@@ -317,7 +319,7 @@ def main(config_path: str, manifest_path: str, output_dir: str):
     
     # Load config
     with open(config_path, 'r') as f:
-        config = yaml.safe_load(f)
+        config = yaml.YAML(typ='rt').load(f)
         
     # Set seeds for reproducibility
     pl.seed_everything(config['data']['random_seed'])
@@ -329,8 +331,15 @@ def main(config_path: str, manifest_path: str, output_dir: str):
     train_loader, val_loader = create_data_loader(manifest_path, config)
     
     # Initialize model
-    model = ViTShipClassifier(config)
-    
+    if config['model']['download']:
+        config['model']['pretrained'] = True
+        model = ViTShipClassifier(config)
+    else:
+        config['model']['pretrained'] = False
+        model = ViTShipClassifier(config)
+        state_dict = torch.load(f"{config['model']['local_weights_path']}/pretrained/{config['model']['name']}.pth", map_location='cpu')
+        model.load_state_dict(state_dict)
+
     # Callbacks
     callbacks = [
         ModelCheckpoint(
