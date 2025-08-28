@@ -1,9 +1,11 @@
 # ViT Ship Classifier Configuration
 
 model:
-  name: vit_base_patch16_224.mae  # Options: vit_small_patch16_224, vit_base_patch16_224, vit_large_patch16_224
+  name: vit_base_patch16_224  # Options: vit_small_patch16_224, vit_base_patch16_224, vit_large_patch16_224
   pretrained: true  # Use ImageNet pretrained weights
   freeze_backbone_epochs: 2  # Freeze backbone for first N epochs (0 to disable)
+  download: false
+  local_weights_path: model_states
 
 training:
   batch_size: 32  # Reduce if GPU OOM

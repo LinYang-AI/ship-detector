@@ -210,3 +210,7 @@ __marimo__/
 uv.lock
 *.pth
 data/
+outputs/
+*.csv
+*.tif
+*.png
