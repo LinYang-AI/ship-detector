@@ -3,27 +3,29 @@
 model:
   name: vit_base_patch16_224  # Options: vit_small_patch16_224, vit_base_patch16_224, vit_large_patch16_224
   pretrained: true  # Use ImageNet pretrained weights
-  freeze_backbone_epochs: 2  # Freeze backbone for first N epochs (0 to disable)
+  freeze_backbone_epochs: 3  # Freeze backbone for first N epochs (0 to disable)
   download: false
   local_weights_path: model_states
+  preprocessing_method: adaptive  # Options: standard, adaptive, multiscale
 
 training:
-  batch_size: 32  # Reduce if GPU OOM
-  max_epochs: 30
-  early_stopping_patience: 5
-  pos_weight: 3.0  # Weight for positive class (ships) to handle imbalance
+  batch_size: 24  # Reduce if GPU OOM
+  max_epochs: 40
+  early_stopping_patience: 7
+  pos_weight: 4.0  # Weight for positive class (ships) to handle imbalance
   use_weighted_sampler: true  # Use weighted sampling for class balance
   precision: 16  # Mixed precision training (16 or 32)
 
 optimizer:
   name: adamw  # Options: adam, adamw
-  lr: 1e-4  # Initial learning rate
-  weight_decay: 0.01  # L2 regularization
+  lr: 8e-5  # Initial learning rate
+  weight_decay: 0.02  # L2 regularization
 
 scheduler:
   name: cosine  # Options: cosine, reduce_on_plateau
   T_max: 30  # For cosine annealing (should match max_epochs)
   eta_min: 1e-6  # Minimum learning rate
+  warmup_epochs: 5  # Learning rate warmup
   # For reduce_on_plateau:
   # factor: 0.5
   # patience: 5
@@ -35,10 +37,35 @@ augmentation:
   rotation: true  # Random 90-degree rotations
   color_jitter: true  # Color augmentation
 
+  # Additional augmentations for ship preservation
+  gaussian_blur_prob: 0.1  # Light blur to simulate atmospheric effects
+  brightness_range: [0.8, 1.2]  # Conservative brightness changes
+  contrast_range: [0.9, 1.1]  # Conservative contrast changes
+
+  # Ship-specific augmentations
+  ship_aware_crop: true
+  preserv_small_objects: true
+
 data:
   val_split: 0.2  # Validation set proportion
   num_workers: 4  # DataLoader workers
   random_seed: 42  # For reproducibility
+
+  # Preprocessing settings
+  target_size: 224
+  interpolation: area
+  apply_sharpening: true
+  sharpening_strength: 0.3
+
+  # Data filtering
+  min_ship_pixel_ratio: 0.001  # Keep very small ships
+  max_background_ratio: 0.95
+
+# Evaluation settings
+evaluation:
+  use_sliding_window: true  # For inference on 768x768 images
+  ensemble_predictions: true
+  confidence_threshold: 0.4  # Lower threshold for small ships
 
 # Alternative lightweight config for testing
 # model:
