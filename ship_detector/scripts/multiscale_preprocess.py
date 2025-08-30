@@ -164,16 +164,3 @@ def test_preprocessing_methods():
         }
     
     return results
-
-if __name__ == "__main__":
-    # Test preprocessing methods
-    results = test_preprocessing_methods()
-    
-    print("Preprocessing Method Comparison:")
-    print("-" * 40)
-    for method, metrics in results.items():
-        print(f"{method}:")
-        print(f"  Ship pixels: {metrics['ship_pixels']}")
-        print(f"  Max intensity: {metrics['max_intensity']}")
-        print(f"  Shape: {metrics['shape']}")
-        print()

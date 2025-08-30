@@ -16,6 +16,10 @@ training:
   use_weighted_sampler: true  # Use weighted sampling for class balance
   precision: 16  # Mixed precision training (16 or 32)
 
+  # Ship-specific training settings
+  small_ship_focus: true  # Apply additional augmentations for small ships
+  mixup_alpha: 0.2  # Data augmentation to improve generalization
+
 optimizer:
   name: adamw  # Options: adam, adamw
   lr: 8e-5  # Initial learning rate
@@ -24,7 +28,7 @@ optimizer:
 scheduler:
   name: cosine  # Options: cosine, reduce_on_plateau
   T_max: 30  # For cosine annealing (should match max_epochs)
-  eta_min: 1e-6  # Minimum learning rate
+  eta_min: 1e-7  # Minimum learning rate
   warmup_epochs: 5  # Learning rate warmup
   # For reduce_on_plateau:
   # factor: 0.5

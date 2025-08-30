@@ -3,13 +3,14 @@ name = "ship-detector"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
-requires-python = ">=3.12.11"
+requires-python = "==3.12.11"
 dependencies = [
     "ipykernel>=6.30.1",
     "matplotlib>=3.10.5",
     "opencv-python>=4.12.0.88",
     "pillow>=11.3.0",
     "pip>=25.2",
+    "pytorch-lightning>=2.5.3",
     "rasterio>=1.4.3",
     "ruamel-yaml>=0.18.15",
     "scikit-learn>=1.7.1",
@@ -18,3 +19,8 @@ dependencies = [
     "timm>=1.0.19",
     "transformers>=4.55.4",
 ]
+[build-system]
+requires = ["setuptools", "wheel"]
+build-backend = "setuptools.build_meta"
+[tool.setuptools]
+packages = ["ship_detector"]
