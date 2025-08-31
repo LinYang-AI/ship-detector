@@ -1,0 +1,63 @@
+# U-Net Ship Segmentation Configuration
+
+model:
+  encoder: efficientnet-b3  # Options: efficientnet-b0 to b7, resnet34, resnet50, resnet101
+  encoder_weights: imagenet  # Pretrained weights
+
+loss:
+  dice_weight: 0.7  # Weight for Dice loss
+  bce_weight: 0.3   # Weight for BCE loss
+
+training:
+  batch_size: 16  # Reduce if GPU OOM
+  max_epochs: 40
+  early_stopping_patience: 7
+  precision: 16  # Mixed precision training
+
+optimizer:
+  name: adamw
+  lr: 1e-3  # Higher LR works well with OneCycle
+  weight_decay: 0.01
+
+scheduler:
+  name: cosine  # Options: cosine, onecycle
+  T_max: 40  # Should match max_epochs
+  eta_min: 1e-6
+
+augmentation:
+  strong_aug: true  # Geometric augmentations
+  color_aug: true   # Color augmentations  
+  noise_aug: true   # Noise augmentations
+
+data:
+  val_split: 0.2
+  num_workers: 4
+  random_seed: 42
+
+# Alternative configurations:
+
+# Lightweight (fast training, good for development)
+# model:
+#   encoder: efficientnet-b0
+#   encoder_weights: imagenet
+# training:
+#   batch_size: 32
+#   max_epochs: 20
+#   precision: 16
+
+# Heavy (best accuracy, slow)
+# model:
+#   encoder: efficientnet-b5
+#   encoder_weights: imagenet
+# training:
+#   batch_size: 8
+#   max_epochs: 60
+#   precision: 32
+
+# ResNet alternative (more stable, slightly lower accuracy)
+# model:
+#   encoder: resnet50
+#   encoder_weights: imagenet
+# loss:
+#   dice_weight: 0.5
+#   bce_weight: 0.5

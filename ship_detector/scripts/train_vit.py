@@ -1,24 +1,22 @@
 import os
-import argparse
-from pathlib import Path
-import ruamel.yaml as yaml
-from typing import Dict, Any, Optional, Tuple, List, Callable
-
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-from torch.utils.data import Dataset, DataLoader, WeightedRandomSampler
-import pytorch_lightning as pl
-from pytorch_lightning.callbacks import ModelCheckpoint, EarlyStopping, LearningRateMonitor
-from pytorch_lightning.loggers import TensorBoardLogger
-
-import timm
-import pandas as pd
-import numpy as np
-from PIL import Image
-import cv2
-from torchvision import transforms
 from sklearn.model_selection import train_test_split
+from torchvision import transforms
+import cv2
+from PIL import Image
+import numpy as np
+import pandas as pd
+import timm
+from pytorch_lightning.loggers import TensorBoardLogger
+from pytorch_lightning.callbacks import ModelCheckpoint, EarlyStopping, LearningRateMonitor
+import pytorch_lightning as pl
+from torch.utils.data import Dataset, DataLoader, WeightedRandomSampler
+import torch.nn.functional as F
+import torch.nn as nn
+import torch
+from typing import Dict, Any, Optional, Tuple, List, Callable
+import ruamel.yaml as yaml
+from pathlib import Path
+import argparse
 
 
 class ShipPatchDataset(Dataset):
@@ -73,37 +71,6 @@ class ShipPatchDataset(Dataset):
                 image = self.transform(image)
         label = torch.tensor(row['has_ship'], dtype=torch.float32)
         return image, label
-
-        # if self.use_cache and idx in self.cache:
-        #     image = self.cache[idx]
-        # else:
-        #     # Load image (handle both .tif and .jpg)
-        #     img_path = row['patch_path']
-        #     if img_path.endswith('.tif'):
-        #         image = cv2.imread(img_path, cv2.IMREAD_UNCHANGED)
-        #         if len(image.shape) == 2:
-        #             image = cv2.cvtColor(image, cv2.COLOR_GRA2RGB)
-        #         elif image.shape[-1] == 4:
-        #             image = image[:, :, :3]
-        #         image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-        #     else:
-        #         image = Image.open(img_path).convert('RGB')
-        #         image = np.array(image)
-
-        #     if self.use_cache:
-        #         self.cache[idx] = image
-
-        # # Convert to PIL for transforms
-        # image = Image.fromarray(image.astype(np.uint8))
-
-        # # Apply transforms
-        # if self.transform:
-        #     image = self.transform(image)
-
-        # # Get label
-        # label = torch.tensor(row['has_ship'], dtype=torch.float32)
-
-        # return image, label
 
     def preprocess_image(self, image):
         """Apply ship-preserving preprocessing"""
@@ -285,6 +252,111 @@ class ViTShipClassifier(pl.LightningModule):
             return optimizer
 
 
+class ResNetShipClassifier(pl.LightningModule):
+    """ResNet for ship classification (binary)"""
+
+    def __init__(self, config: Dict[str, Any]):
+        super().__init__()
+        self.save_hyperparameters(config)
+        # Load ResNet from timm
+        self.model = timm.create_model(
+            config['model']['name'],
+            pretrained=config['model']['pretrained'],
+            num_classes=1  # Binary classification
+        )
+        # Optionally freeze backbone
+        if config['model'].get('freeze_backbone_epochs', 0) > 0:
+            self.freeze_backbone()
+        # Loss function with optional class weights
+        pos_weight = torch.tensor([config['training'].get('pos_weight', 1.0)])
+        self.criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
+
+    def freeze_backbone(self):
+        # Freeze all layers except the classification head
+        for name, param in self.model.named_parameters():
+            if 'fc' not in name and 'classifier' not in name:
+                param.requires_grad = False
+
+    def unfreeze_backbone(self):
+        for param in self.model.parameters():
+            param.requires_grad = True
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.model(x)
+
+    def training_step(self, batch, batch_idx):
+        images, labels = batch
+        outputs = self(images).squeeze()
+        loss = self.criterion(outputs, labels)
+        preds = torch.sigmoid(outputs) > 0.5
+        acc = (preds == labels).float().mean()
+        self.log('train-loss', loss, on_step=False,
+                 on_epoch=True, prog_bar=True)
+        self.log('train_acc', acc, on_step=False, on_epoch=True, prog_bar=True)
+        return loss
+
+    def validation_step(self, batch, batch_idx):
+        images, labels = batch
+        outputs = self(images).squeeze()
+        loss = self.criterion(outputs, labels)
+        probs = torch.sigmoid(outputs)
+        preds = probs > 0.5
+        acc = (preds == labels).float().mean()
+        self.log('val_loss', loss, on_step=False, on_epoch=True, prog_bar=True)
+        self.log('val_acc', acc, on_step=False, on_epoch=True, prog_bar=True)
+        return {'loss': loss, 'preds': preds, 'labels': labels, 'probs': probs}
+
+    def configure_optimizers(self):
+        opt_config = self.hparams['optimizer']
+        if opt_config['name'] == 'adam':
+            optimizer = torch.optim.Adam(
+                self.parameters(),
+                lr=opt_config['lr'],
+                weight_decay=opt_config.get('weight_decay', 0)
+            )
+        elif opt_config['name'] == 'adamw':
+            optimizer = torch.optim.AdamW(
+                self.parameters(),
+                lr=opt_config['lr'],
+                weight_decay=opt_config.get('weight_decay', 0)
+            )
+        else:
+            raise ValueError(f"Unknown optimizer: {opt_config['name']}")
+
+        scheduler_config = self.hparams['scheduler']
+        if scheduler_config['name'] == 'cosine':
+            scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+                optimizer,
+                T_max=scheduler_config['T_max'],
+                eta_min=scheduler_config.get('eta_min', 0)
+            )
+            return {
+                'optimizer': optimizer,
+                'lr_scheduler': {
+                    'scheduler': scheduler,
+                    'interval': 'epoch'
+                }
+            }
+        elif scheduler_config['name'] == 'reduce_on_plateau':
+            scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+                optimizer,
+                mode='min',
+                factor=scheduler_config.get('factor', 0.5),
+                patience=scheduler_config.get('patience', 5),
+                min_lr=scheduler_config.get('min_lr', 1e-7)
+            )
+            return {
+                'optimizer': optimizer,
+                'lr_scheduler': {
+                    'scheduler': scheduler,
+                    'monitor': 'val_loss',
+                    'interval': 'epoch'
+                }
+            }
+        else:
+            return optimizer
+
+
 def get_augmentation_transforms(config: Dict[str, Any]) -> Tuple[transforms.Compose, transforms.Compose]:
     """Create augmentation pipelines for training and validation."""
     aug_config = config['augmentation']
@@ -380,9 +452,9 @@ def create_data_loader(
 
     # Create datasets
     train_dataset = ShipPatchDataset(
-        train_df, config, transform=train_transforms, is_training=True)
+        config=config, manifest_df=train_df, transform=train_transforms, is_training=True)
     val_dataset = ShipPatchDataset(
-        val_df, config, transform=val_transforms, is_training=False)
+        config=config, manifest_df=val_df, transform=val_transforms, is_training=False)
 
     # Handle class imbalance with weighted sampling
     if config['training'].get('use_weighted_sampler', False):
