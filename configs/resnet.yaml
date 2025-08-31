@@ -1,7 +1,7 @@
 # ViT Ship Classifier Configuration
 
 model:
-  name: vit_base_patch16_224  # Options: vit_small_patch16_224, vit_base_patch16_224, vit_large_patch16_224
+  name: resnet50  # Options: resnet50, resnet101, resnet152
   pretrained: true  # Use ImageNet pretrained weights
   freeze_backbone_epochs: 3  # Freeze backbone for first N epochs (0 to disable)
   download: false
