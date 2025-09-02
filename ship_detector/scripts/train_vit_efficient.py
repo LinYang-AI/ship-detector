@@ -32,6 +32,7 @@ warnings.filterwarnings('ignore')
 # LoRA Implementation for ViT
 # ============================================================================
 
+
 class LoRALayer(nn.Module):
     """Low-Rank Adaptation layer for parameter-efficient fine-tuning."""
     
@@ -246,148 +247,398 @@ class StreamingDataset(IterableDataset):
 # Memory-Efficient ViT with LoRA
 # ============================================================================
 
+class LoRALinear(nn.Module):
+    """Proper LoRA Linear layer implementation"""
+    
+    def __init__(self, original_layer: nn.Linear, rank: int = 16, alpha: float = 32):
+        super().__init__()
+        self.original_layer = original_layer
+        self.rank = rank
+        self.alpha = alpha
+        
+        # Freeze original layer
+        for param in self.original_layer.parameters():
+            param.requires_grad = False
+            
+        # LoRA parameters - these MUST have requires_grad=True
+        self.lora_A = nn.Parameter(torch.randn(rank, original_layer.in_features) * 0.01)
+        self.lora_B = nn.Parameter(torch.zeros(original_layer.out_features, rank))
+        
+        # Ensure gradients are enabled for LoRA parameters
+        self.lora_A.requires_grad = True
+        self.lora_B.requires_grad = True
+        
+    def forward(self, x):
+        # Original forward pass (frozen)
+        original_out = self.original_layer(x)
+        
+        # LoRA adaptation
+        lora_out = (x @ self.lora_A.T) @ self.lora_B.T
+        
+        # Combine with scaling
+        return original_out + (self.alpha / self.rank) * lora_out
+
+class LoRAAttention(nn.Module):
+    """LoRA adapter for attention layers"""
+    
+    def __init__(self, original_attention, rank: int = 16, alpha: float = 32):
+        super().__init__()
+        self.original_attention = original_attention
+        self.rank = rank
+        self.alpha = alpha
+        
+        # Freeze original attention
+        for param in self.original_attention.parameters():
+            param.requires_grad = False
+        
+        # Add LoRA to query, key, value projections
+        if hasattr(original_attention, 'qkv'):
+            self.qkv_lora = LoRALinear(original_attention.qkv, rank, alpha)
+        
+        if hasattr(original_attention, 'proj'):
+            self.proj_lora = LoRALinear(original_attention.proj, rank, alpha)
+    
+    def forward(self, x, *args, **kwargs):
+        # This is a simplified version - you'd need to adapt based on the specific attention implementation
+        return self.original_attention(x, *args, **kwargs)
+
+
 class EfficientViTClassifier(pl.LightningModule):
-    """Memory-efficient ViT with LoRA for ship classification."""
+    """Fixed ViT classifier with proper LoRA implementation"""
     
     def __init__(self, config: Dict[str, Any]):
         super().__init__()
         self.save_hyperparameters(config)
         
         # Load pretrained ViT
-        self.model = timm.create_model(
+        self.backbone = timm.create_model(
             config['model']['name'],
             pretrained=config['model']['pretrained'],
-            num_classes=1
+            num_classes=0,  # Remove original head
         )
         
-        # Apply LoRA if enabled
-        if config['model'].get('use_lora', False):
-            self.model = add_lora_to_vit(
-                self.model,
-                rank=config['model'].get('lora_rank', 16),
-                alpha=config['model'].get('lora_alpha', 16.0),
-                target_modules=config['model'].get('lora_target_modules', ['qkv', 'proj'])
-            )
-            self._freeze_base_model()
-            print(f"LoRA enabled with rank={config['model'].get('lora_rank', 16)}")
+        # Add LoRA adapters
+        self.add_lora_to_vit(
+            rank=config['model'].get('lora_rank', 16),
+            alpha=config['model'].get('lora_alpha', 32)
+        )
         
+        # Binary classification head (always trainable)
+        self.classifier = nn.Sequential(
+            nn.Dropout(config['model'].get('dropout', 0.1)),
+            nn.Linear(self.backbone.num_features, 1)
+        )
+        
+        # Ensure classifier is trainable
+        for param in self.classifier.parameters():
+            param.requires_grad = True
+            
         # Loss function
         pos_weight = torch.tensor([config['training'].get('pos_weight', 1.0)])
         self.criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
         
-        # Gradient checkpointing for memory efficiency
-        if config['model'].get('gradient_checkpointing', False):
-            self.model.set_grad_checkpointing(enable=True)
+    def add_lora_to_vit(self, rank: int = 16, alpha: float = 32):
+        """Add LoRA adapters to ViT transformer blocks"""
         
-        # Mixed precision
-        self.automatic_optimization = True
+        # First, freeze ALL original parameters
+        for param in self.backbone.parameters():
+            param.requires_grad = False
+            
+        # Add LoRA to transformer blocks
+        for name, module in self.backbone.named_modules():
+            if 'blocks' in name and 'attn.qkv' in name:
+                # Replace QKV projection with LoRA version
+                parent_name = name.rsplit('.', 1)[0]
+                parent_module = dict(self.backbone.named_modules())[parent_name]
+                
+                # Get the qkv layer
+                qkv_layer = module
+                lora_qkv = LoRALinear(qkv_layer, rank, alpha)
+                
+                # Replace the layer
+                setattr(parent_module, 'qkv', lora_qkv)
+                
+            elif 'blocks' in name and 'attn.proj' in name and 'drop' not in name:
+                # Replace attention projection with LoRA version
+                parent_name = name.rsplit('.', 1)[0]
+                parent_module = dict(self.backbone.named_modules())[parent_name]
+                
+                proj_layer = module
+                lora_proj = LoRALinear(proj_layer, rank, alpha)
+                setattr(parent_module, 'proj', lora_proj)
+                
+            elif 'blocks' in name and 'mlp.fc1' in name:
+                # Replace MLP layers with LoRA versions
+                parent_name = name.rsplit('.', 1)[0]
+                parent_module = dict(self.backbone.named_modules())[parent_name]
+                
+                fc1_layer = module
+                lora_fc1 = LoRALinear(fc1_layer, rank, alpha)
+                setattr(parent_module, 'fc1', lora_fc1)
+                
+            elif 'blocks' in name and 'mlp.fc2' in name:
+                parent_name = name.rsplit('.', 1)[0]
+                parent_module = dict(self.backbone.named_modules())[parent_name]
+                
+                fc2_layer = module
+                lora_fc2 = LoRALinear(fc2_layer, rank, alpha)
+                setattr(parent_module, 'fc2', lora_fc2)
         
-        # Log model stats
-        self._log_model_stats()
-    
-    def _freeze_base_model(self):
-        """Freeze base model parameters when using LoRA."""
-        for name, param in self.model.named_parameters():
-            if 'lora' not in name:
-                param.requires_grad = False
-    
-    def _log_model_stats(self):
-        """Log model parameter statistics."""
-        total_params = sum(p.numel() for p in self.parameters())
+        # Verify we have trainable parameters
         trainable_params = sum(p.numel() for p in self.parameters() if p.requires_grad)
+        total_params = sum(p.numel() for p in self.parameters())
         
-        print("="*50)
-        print(f"Total parameters: {total_params:,}")
-        print(f"Trainable parameters: {trainable_params:,}")
-        print(f"Reduction: {(1 - trainable_params/total_params)*100:.1f}%")
-        print("="*50)
+        print(f"LoRA Setup Complete:")
+        print(f"  Trainable parameters: {trainable_params:,}")
+        print(f"  Total parameters: {total_params:,}")
+        print(f"  Trainable ratio: {trainable_params/total_params:.4f}")
+        
+        if trainable_params == 0:
+            raise RuntimeError("No trainable parameters! LoRA setup failed.")
     
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.model(x)
+    def forward(self, x):
+        # Extract features from backbone
+        features = self.backbone(x)  # Shape: (batch_size, num_features)
+        
+        # Binary classification
+        logits = self.classifier(features)  # Shape: (batch_size, 1)
+        
+        return logits.squeeze(-1)  # Shape: (batch_size,)
     
     def training_step(self, batch, batch_idx):
         images, labels = batch
         
-        # Forward pass with gradient accumulation
-        outputs = self(images).squeeze()
-        loss = self.criterion(outputs, labels)
+        # Forward pass
+        logits = self(images)
         
-        # Calculate accuracy
-        preds = torch.sigmoid(outputs) > 0.5
+        # Compute loss
+        loss = self.criterion(logits, labels)
+        
+        # CRITICAL FIX: Verify loss requires grad
+        if not loss.requires_grad:
+            raise RuntimeError(
+                f"Loss does not require grad! "
+                f"Trainable params: {sum(p.numel() for p in self.parameters() if p.requires_grad)}"
+            )
+        
+        # Calculate metrics
+        probs = torch.sigmoid(logits)
+        preds = probs > 0.5
         acc = (preds == labels).float().mean()
         
         # Log metrics
         self.log('train_loss', loss, on_step=False, on_epoch=True, prog_bar=True)
         self.log('train_acc', acc, on_step=False, on_epoch=True, prog_bar=True)
         
-        # Free up memory periodically
-        if batch_idx % 100 == 0:
-            gc.collect()
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-        
         return loss
     
     def validation_step(self, batch, batch_idx):
         images, labels = batch
-        outputs = self(images).squeeze()
-        loss = self.criterion(outputs, labels)
         
-        probs = torch.sigmoid(outputs)
+        # Forward pass
+        logits = self(images)
+        loss = self.criterion(logits, labels)
+        
+        # Calculate metrics
+        probs = torch.sigmoid(logits)
         preds = probs > 0.5
         acc = (preds == labels).float().mean()
         
+        # Log metrics
         self.log('val_loss', loss, on_step=False, on_epoch=True, prog_bar=True)
         self.log('val_acc', acc, on_step=False, on_epoch=True, prog_bar=True)
         
-        return {'loss': loss, 'acc': acc}
+        return {
+            'loss': loss,
+            'preds': preds,
+            'labels': labels,
+            'probs': probs
+        }
     
     def configure_optimizers(self):
-        # Only optimize LoRA parameters if enabled
-        if self.hparams['model'].get('use_lora', False):
-            # Only LoRA parameters
-            lora_params = [p for n, p in self.named_parameters() if 'lora' in n and p.requires_grad]
-            params = lora_params
-        else:
-            # All parameters
-            params = self.parameters()
+        # Only optimize trainable parameters (LoRA + classifier)
+        trainable_params = [p for p in self.parameters() if p.requires_grad]
         
-        # Optimizer
+        if len(trainable_params) == 0:
+            raise RuntimeError("No trainable parameters found!")
+        
         opt_config = self.hparams['optimizer']
-        if opt_config['name'] == 'adam':
+        
+        if opt_config['name'] == 'adamw':
+            optimizer = torch.optim.AdamW(
+                trainable_params,
+                lr=opt_config['lr'],
+                weight_decay=opt_config.get('weight_decay', 0.01)
+            )
+        elif opt_config['name'] == 'adam':
             optimizer = torch.optim.Adam(
-                params,
+                trainable_params,
                 lr=opt_config['lr'],
                 weight_decay=opt_config.get('weight_decay', 0)
             )
-        elif opt_config['name'] == 'adamw':
-            optimizer = torch.optim.AdamW(
-                params,
-                lr=opt_config['lr'],
-                weight_decay=opt_config.get('weight_decay', 0.01)
-            )
-        elif opt_config['name'] == '8bit_adam':
-            # Use 8-bit Adam for memory efficiency
-            import bitsandbytes as bnb
-            optimizer = bnb.optim.Adam8bit(
-                params,
-                lr=opt_config['lr'],
-                weight_decay=opt_config.get('weight_decay', 0.01)
-            )
+        else:
+            raise ValueError(f"Unknown optimizer: {opt_config['name']}")
         
-        # Scheduler
+        # Learning rate scheduler
         scheduler_config = self.hparams['scheduler']
         if scheduler_config['name'] == 'cosine':
             scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
                 optimizer,
-                T_max=scheduler_config['T_max']
+                T_max=scheduler_config['T_max'],
+                eta_min=scheduler_config.get('eta_min', 0)
             )
             return {
                 'optimizer': optimizer,
-                'lr_scheduler': scheduler
+                'lr_scheduler': {
+                    'scheduler': scheduler,
+                    'interval': 'epoch'
+                }
             }
+        else:
+            return optimizer
+
+# class EfficientViTClassifier(pl.LightningModule):
+#     """Memory-efficient ViT with LoRA for ship classification."""
+    
+#     def __init__(self, config: Dict[str, Any]):
+#         super().__init__()
+#         self.save_hyperparameters(config)
         
-        return optimizer
+#         # Load pretrained ViT
+#         self.model = timm.create_model(
+#             config['model']['name'],
+#             pretrained=config['model']['pretrained'],
+#             num_classes=1
+#         )
+        
+#         # Apply LoRA if enabled
+#         if config['model'].get('use_lora', False):
+#             self.model = add_lora_to_vit(
+#                 self.model,
+#                 rank=config['model'].get('lora_rank', 16),
+#                 alpha=config['model'].get('lora_alpha', 16.0),
+#                 target_modules=config['model'].get('lora_target_modules', ['qkv', 'proj'])
+#             )
+#             self._freeze_base_model()
+#             print(f"LoRA enabled with rank={config['model'].get('lora_rank', 16)}")
+        
+#         # Loss function
+#         pos_weight = torch.tensor([config['training'].get('pos_weight', 1.0)])
+#         self.criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
+        
+#         # Gradient checkpointing for memory efficiency
+#         if config['model'].get('gradient_checkpointing', False):
+#             self.model.set_grad_checkpointing(enable=True)
+        
+#         # Mixed precision
+#         self.automatic_optimization = True
+        
+#         # Log model stats
+#         self._log_model_stats()
+    
+#     def _freeze_base_model(self):
+#         """Freeze base model parameters when using LoRA."""
+#         for name, param in self.model.named_parameters():
+#             if 'lora' not in name:
+#                 param.requires_grad = False
+    
+#     def _log_model_stats(self):
+#         """Log model parameter statistics."""
+#         total_params = sum(p.numel() for p in self.parameters())
+#         trainable_params = sum(p.numel() for p in self.parameters() if p.requires_grad)
+        
+#         print("="*50)
+#         print(f"Total parameters: {total_params:,}")
+#         print(f"Trainable parameters: {trainable_params:,}")
+#         print(f"Reduction: {(1 - trainable_params/total_params)*100:.1f}%")
+#         print("="*50)
+    
+#     def forward(self, x: torch.Tensor) -> torch.Tensor:
+#         return self.model(x)
+    
+#     def training_step(self, batch, batch_idx):
+#         images, labels = batch
+        
+#         # Forward pass with gradient accumulation
+#         outputs = self(images).squeeze()
+#         loss = self.criterion(outputs, labels)
+        
+#         # Calculate accuracy
+#         preds = torch.sigmoid(outputs) > 0.5
+#         acc = (preds == labels).float().mean()
+        
+#         # Log metrics
+#         self.log('train_loss', loss, on_step=False, on_epoch=True, prog_bar=True)
+#         self.log('train_acc', acc, on_step=False, on_epoch=True, prog_bar=True)
+        
+#         # Free up memory periodically
+#         if batch_idx % 100 == 0:
+#             gc.collect()
+#             if torch.cuda.is_available():
+#                 torch.cuda.empty_cache()
+        
+#         return loss
+    
+#     def validation_step(self, batch, batch_idx):
+#         images, labels = batch
+#         outputs = self(images).squeeze()
+#         loss = self.criterion(outputs, labels)
+        
+#         probs = torch.sigmoid(outputs)
+#         preds = probs > 0.5
+#         acc = (preds == labels).float().mean()
+        
+#         self.log('val_loss', loss, on_step=False, on_epoch=True, prog_bar=True)
+#         self.log('val_acc', acc, on_step=False, on_epoch=True, prog_bar=True)
+        
+#         return {'loss': loss, 'acc': acc}
+    
+#     def configure_optimizers(self):
+#         # Only optimize LoRA parameters if enabled
+#         if self.hparams['model'].get('use_lora', False):
+#             # Only LoRA parameters
+#             lora_params = [p for n, p in self.named_parameters() if 'lora' in n and p.requires_grad]
+#             params = lora_params
+#         else:
+#             # All parameters
+#             params = self.parameters()
+        
+#         # Optimizer
+#         opt_config = self.hparams['optimizer']
+#         if opt_config['name'] == 'adam':
+#             optimizer = torch.optim.Adam(
+#                 params,
+#                 lr=opt_config['lr'],
+#                 weight_decay=opt_config.get('weight_decay', 0)
+#             )
+#         elif opt_config['name'] == 'adamw':
+#             optimizer = torch.optim.AdamW(
+#                 params,
+#                 lr=opt_config['lr'],
+#                 weight_decay=opt_config.get('weight_decay', 0.01)
+#             )
+#         elif opt_config['name'] == '8bit_adam':
+#             # Use 8-bit Adam for memory efficiency
+#             import bitsandbytes as bnb
+#             optimizer = bnb.optim.Adam8bit(
+#                 params,
+#                 lr=opt_config['lr'],
+#                 weight_decay=opt_config.get('weight_decay', 0.01)
+#             )
+        
+#         # Scheduler
+#         scheduler_config = self.hparams['scheduler']
+#         if scheduler_config['name'] == 'cosine':
+#             scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+#                 optimizer,
+#                 T_max=scheduler_config['T_max']
+#             )
+#             return {
+#                 'optimizer': optimizer,
+#                 'lr_scheduler': scheduler
+#             }
+        
+#         return optimizer
 
 
 # ============================================================================
