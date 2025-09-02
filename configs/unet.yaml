@@ -1,63 +1,52 @@
-# U-Net Ship Segmentation Configuration
+# U-Net Ship Segmentation with Encoder Freezing Configuration
 
 model:
-  encoder: efficientnet-b3  # Options: efficientnet-b0 to b7, resnet34, resnet50, resnet101
-  encoder_weights: imagenet  # Pretrained weights
+  encoder: efficientnet-b3  # Pretrained encoder
+  encoder_weights: imagenet  # Use ImageNet pretrained weights
+  
+  # Freezing configuration
+  freeze_encoder: true  # Whether to freeze encoder initially
+  freeze_strategy: full  # Options: full, partial, gradual, none
+  unfreeze_epoch: 5  # Epoch to unfreeze (for 'full' strategy)
+  freeze_bn: true  # Keep BatchNorm layers frozen even after unfreezing
+  
+  # Alternative strategies explained:
+  # - none: No freezing, train everything from start (original behavior)
+  # - full: Freeze entire encoder, unfreeze at specified epoch
+  # - partial: Freeze only early layers (first 75% of encoder)
+  # - gradual: Start frozen, unfreeze layer by layer during training
 
 loss:
-  dice_weight: 0.7  # Weight for Dice loss
-  bce_weight: 0.3   # Weight for BCE loss
+  dice_weight: 0.7
+  bce_weight: 0.3
 
 training:
-  batch_size: 16  # Reduce if GPU OOM
-  max_epochs: 40
+  batch_size: 16
+  max_epochs: 10
   early_stopping_patience: 7
-  precision: 16  # Mixed precision training
+  precision: 16  # Mixed precision
 
 optimizer:
   name: adamw
-  lr: 1e-3  # Higher LR works well with OneCycle
+  lr: 1e-3  # Learning rate for decoder
+  encoder_lr_scale: 0.1  # Encoder LR = lr * encoder_lr_scale (when unfrozen)
   weight_decay: 0.01
+  
+  # With encoder_lr_scale=0.1:
+  # - Decoder learning rate: 1e-3
+  # - Encoder learning rate: 1e-4 (when unfrozen)
 
 scheduler:
-  name: cosine  # Options: cosine, onecycle
-  T_max: 40  # Should match max_epochs
+  name: cosine
+  T_max: 40
   eta_min: 1e-6
 
 augmentation:
-  strong_aug: true  # Geometric augmentations
-  color_aug: true   # Color augmentations  
-  noise_aug: true   # Noise augmentations
+  strong_aug: true
+  color_aug: true
+  noise_aug: true
 
 data:
   val_split: 0.2
   num_workers: 4
   random_seed: 42
-
-# Alternative configurations:
-
-# Lightweight (fast training, good for development)
-# model:
-#   encoder: efficientnet-b0
-#   encoder_weights: imagenet
-# training:
-#   batch_size: 32
-#   max_epochs: 20
-#   precision: 16
-
-# Heavy (best accuracy, slow)
-# model:
-#   encoder: efficientnet-b5
-#   encoder_weights: imagenet
-# training:
-#   batch_size: 8
-#   max_epochs: 60
-#   precision: 32
-
-# ResNet alternative (more stable, slightly lower accuracy)
-# model:
-#   encoder: resnet50
-#   encoder_weights: imagenet
-# loss:
-#   dice_weight: 0.5
-#   bce_weight: 0.5
