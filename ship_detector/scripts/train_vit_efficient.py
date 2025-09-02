@@ -100,7 +100,8 @@ def add_lora_to_vit(
                     rank=rank,
                     alpha=alpha
                 )
-                lora_layers[name] = lora_layer
+                safe_layer_name = name.replace('.', '_')
+                lora_layers[safe_layer_name] = lora_layer
     
     # Monkey-patch forward methods to include LoRA
     def make_forward_with_lora(original_module, lora_layer):
@@ -455,6 +456,8 @@ def create_efficient_data_loaders(
     """
     # Load manifest
     df = pd.read_csv(manifest_path)
+    df['has_ship'] = df['EncodedPixels'].notnull().astype(int)
+    df['patch_path'] = df['ImageId'].apply(lambda x: os.path.join(config['data']['train'], x))
     
     # Check memory before loading
     if memory_monitor and memory_monitor.check_memory_critical():
