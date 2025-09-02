@@ -3,6 +3,7 @@ import argparse
 import ruamel.yaml as yaml
 from pathlib import Path
 from typing import Dict, Any, Optional, Tuple, List
+import logging
 
 import torch
 import torch.nn as nn
@@ -20,6 +21,9 @@ from PIL import Image
 import albumentations as A
 from albumentations.pytorch import ToTensorV2
 from sklearn.model_selection import train_test_split
+
+
+logger = logging.getLogger(__name__)
 
 
 class ShipSegmentationDataset(Dataset):
@@ -147,10 +151,135 @@ class UNetShipSegmentation(pl.LightningModule):
             bce_weight=config['loss']['bce_weight']
         )
         
+        # Freezing configuration
+        self.freeze_encoder = config['model'].get('freeze_encoder', False)
+        self.unfreeze_epoch = config['model'].get('unfreeze_epoch', 5)
+        self.freeze_bn = config['model'].get('freeze_bn', True)
+        self.freeze_strategy = config['model'].get('freeze_strategy', 'full')  # 'full', 'partial'
+        
+        # Apply initial freezing
+        if self.freeze_encoder:
+            self._apply_freeze_strategy()
+        
+        # Log model statistics
+        self._log_model_stats()
+        
         # Metrics
         self.train_iou = []
         self.val_iou = []
+
+    def _apply_freeze_strategy(self):
+        """Apply the selected freezing strategy"""
+        if self.freeze_strategy == 'full':
+            self._freeze_encoder_full()
+        elif self.freeze_strategy == 'partial':
+            self._freeze_encoder_partial()
+        elif self.freeze_strategy == 'gradual':
+            self._freeze_encoder_gradual()
+        else:
+            logger.warning(f"Unknown freeze strategy: {self.freeze_strategy}")
+    
+    def _freeze_encoder_full(self):
+        """Freeze entire encoder."""
+        logger.info("Freezing the entire encoder.")
+        # Freeze encoder parameters
+        for param in self.model.encoder.parameters():
+            param.requires_grad = False
+
+        # Optionally freeze batch norm layers
+        if self.freeze_bn:
+            self._freeze_batchnorm()
+    
+    def _freeze_encoder_partial(self):
+        """Freeze only early layers of encoder (keep later layers trainable)"""
+        logger.info("Freezing partial encoder (first 3/4 of layers)")
         
+        # Get encoder stages
+        encoder_children = list(self.model.encoder.children())
+        
+        # Freeze first 75% of encoder stages
+        freeze_until = int(len(encoder_children) * 0.75)
+        
+        for i, child in enumerate(encoder_children):
+            if i < freeze_until:
+                for param in child.parameters():
+                    param.requires_grad = False
+                logger.info(f"Froze encoder stage {i}")
+            else:
+                logger.info(f"Kept encoder stage {i} trainable")
+    
+    def _freeze_encoder_gradual(self):
+        """Freeze encoder with gradual unfreezing schedule."""
+        logger.info("Using gradual unfreezing strategy")
+        
+        # Start with everything frozen
+        self._freeze_encoder_full()
+        
+        # Will unfreeze gradually during training
+        self.layers_to_unfreeze = list(reversed(list(self.model.encoder.children())))
+        
+    
+    def _freeze_batchnorm(self):
+        """Freeze batch normalization layers in encoder."""
+        logger.info("Freezing BatchNorm layers in encoder")
+        
+        def set_bn_eval(module):
+            if isinstance(module, (nn.BatchNorm2d, nn.BatchNorm1d)):
+                module.eval()
+                # Disable gradient computation
+                for param in module.parameters():
+                    param.requires_grad = False
+        
+        self.model.encoder.apply(set_bn_eval)
+
+    def _unfreeze_gradual_next_layer(self):
+        """Unfreeze next layer in gradual strategy."""
+        if hasattr(self, 'layers_to_unfreeze') and self.layers_to_unfreeze:
+            layer = self.layers_to_unfreeze.pop(0)
+            for param in layer.parameters():
+                param.requires_grad = True
+            logger.info(f"Unfroze layer at epoch {self.current_epoch}")
+    
+    def _log_model_stats(self):
+        """Log model parameter statistics"""
+        total_params = sum(p.numel() for p in self.model.parameters())
+        trainable_params = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
+        encoder_params = sum(p.numel() for p in self.model.encoder.parameters())
+        encoder_trainable = sum(p.numel() for p in self.model.encoder.parameters() if p.requires_grad)
+        decoder_params = sum(p.numel() for p in self.model.decoder.parameters())
+        
+        logger.info("="*50)
+        logger.info("Model Parameter Statistics:")
+        logger.info(f"Total parameters: {total_params:,}")
+        logger.info(f"Trainable parameters: {trainable_params:,}")
+        logger.info(f"Frozen parameters: {total_params - trainable_params:,}")
+        logger.info(f"Encoder parameters: {encoder_params:,} ({encoder_trainable:,} trainable)")
+        logger.info(f"Decoder parameters: {decoder_params:,}")
+        logger.info(f"Percentage trainable: {100 * trainable_params / total_params:.1f}%")
+        logger.info("="*50)
+
+    def on_train_epoch_start(self):
+        """Called at the start of each training epoch."""
+        # Handle unfreezing strategies
+        if self.freeze_encoder:
+            if self.freeze_strategy == 'full' and self.current_epoch == self.unfreeze_epoch:
+                logger.info(f"Reached unfreeze epoch {self.unfreeze_epoch}")
+                self._unfreeze_eoncoder()
+                self._log_model_stats()
+
+            elif self.freeze_strategy == 'gradual':
+                # Unfreeze one layer every few epochs
+                if self.current_epoch > 0 and self.current_epoch % 2 == 0:
+                    self._unfreeze_gradual_next_layer()
+                    self._log_model_stats()
+        
+        # Ensure batch norm layers stay in eval model if frozen
+        if self.freeze_bn:
+            def set_bn_eval(module):
+                if isinstance(module, (nn.BatchNorm2d, nn.BatchNorm1d)):
+                    module.eval()
+            self.model.encoder.apply(set_bn_eval)
+    
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.model(x)
     
@@ -187,6 +316,12 @@ class UNetShipSegmentation(pl.LightningModule):
         self.log('train_loss', loss, on_step=False, on_epoch=True, prog_bar=True)
         self.log('train_iou', iou, on_step=False, on_epoch=True, prog_bar=True)
         self.log('train_dice', dice, on_step=False, on_epoch=True)
+        
+        # Log learning rates for different parameter groups
+        if self.trainer.optimizers:
+            opt = self.trainer.optimizers[0]
+            for i, pg in enumerate(opt.param_groups):
+                self.log(f"lr_group_{i}", pg['lr'], on_step=False, on_epoch=True)
         
         return loss
     
@@ -252,18 +387,54 @@ class UNetShipSegmentation(pl.LightningModule):
         )
     
     def configure_optimizers(self):
-        # Optimizer
+        """Configure optimizers with different learning rates for encoder/decoder."""
+        
+        # Separate encoder and decoder parameters
+        encoder_params = list(self.model.encoder.parameters())
+        decoder_params = list(self.model.decoder.parameters())
+        
+        # Also include segmentation head parameters with decoder
+        head_params = []
+        for name, module in self.model.named_children():
+            if name not in ['encoder', 'decoder']:
+                head_params.extend(list(module.parameters()))
+        
+        # Different learning rates for encoder and decoder
+        lr = self.hparams['optimizer']['lr']
+        encoder_lr_scale = self.hparams['optimizer'].get('encoder_lr_scale', 0.1)
+        # Create parameter group
+        param_groups = []
+        
+        if self.freeze_encoder and self.freeze_strategy == 'full':
+            # If encoder is frozen, only add decoder params initially
+            param_groups.append({
+                'params': decoder_params + head_params,
+                'lr': lr,
+                'name': 'decoder'
+            })
+        else:
+            param_groups.extend([
+                {
+                    'params': encoder_params,
+                    'lr': lr * encoder_lr_scale,
+                    'name': 'encoder'
+                },
+                {
+                    'params': decoder_params + head_params,
+                    'lr': lr,
+                    'name': 'decoder'
+                }
+            ])
+        
         opt_config = self.hparams['optimizer']
         if opt_config['name'] == 'adam':
             optimizer = torch.optim.Adam(
-                self.parameters(),
-                lr=opt_config['lr'],
+                param_groups,
                 weight_decay=opt_config.get('weight_decay', 0)
             )
         elif opt_config['name'] == 'adamw':
             optimizer = torch.optim.AdamW(
-                self.parameters(),
-                lr=opt_config['lr'],
+                param_groups,
                 weight_decay=opt_config.get('weight_decay', 0.01)
             )
         
@@ -308,7 +479,7 @@ def get_augmentation_transforms(config: Dict[str, Any]) -> Tuple[A.Compose, A.Co
     # Training transforms
     train_transforms = [
         A.RandomRotate90(p=0.5),
-        A.Flip(p=0.5),
+        A.HorizontalFlip(p=0.5),
     ]
     
     # Add strong augmentations for small objects
@@ -398,7 +569,10 @@ def create_data_loaders(
     
     # Load manifest
     df = pd.read_csv(manifest_path)
-    
+    df['has_ship'] = df['EncodedPixels'].notna().astype(int)
+    df['patch_path'] = df['ImageId'].apply(
+        lambda x: f"data/airbus-ship-detection/train_v2/{x}"
+    )
     # Filter for ship patches only
     ship_df = df[df['has_ship'] == 1].copy()
     
