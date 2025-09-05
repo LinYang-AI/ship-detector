@@ -35,10 +35,10 @@ def load_model(checkpoint_path: str, config: Dict) -> UNetShipSegmentation:
     model = UNetShipSegmentation(config)
     
     if checkpoint_path.endswith('.ckpt'):
-        checkpoint = torch.load(checkpoint_path, map_location='cpu')
+        checkpoint = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
         model.load_state_dict(checkpoint['state_dict'])
     else:
-        model.load_state_dict(torch.load(checkpoint_path, map_location='cpu'))
+        model.load_state_dict(torch.load(checkpoint_path, map_location='cpu', weights_only=False))
     
     model.eval()
     return model
@@ -512,6 +512,7 @@ def main(
     # Error analysis
     error_report = analyze_errors(metrics_list, output_dir)
     
+    summary['error_report'] = error_report
     # Export sample to GeoJSON if requested
     if save_geojson and predictions:
         geojson_dir = Path(output_dir) / 'geojson'
