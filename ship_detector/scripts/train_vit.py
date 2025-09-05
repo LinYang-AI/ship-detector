@@ -1,22 +1,20 @@
 import os
+import cv2
+import yaml
+import timm
 from sklearn.model_selection import train_test_split
 from torchvision import transforms
-import cv2
 from PIL import Image
 import numpy as np
 import pandas as pd
-import timm
+import pytorch_lightning as pl
 from pytorch_lightning.loggers import TensorBoardLogger
 from pytorch_lightning.callbacks import ModelCheckpoint, EarlyStopping, LearningRateMonitor
-import pytorch_lightning as pl
-from torch.utils.data import Dataset, DataLoader, WeightedRandomSampler
-import torch.nn.functional as F
-import torch.nn as nn
 import torch
-from typing import Dict, Any, Optional, Tuple, List, Callable
-import ruamel.yaml as yaml
+import torch.nn as nn
+from torch.utils.data import Dataset, DataLoader, WeightedRandomSampler
+from typing import Dict, Any, Tuple
 from pathlib import Path
-import argparse
 
 
 class ShipPatchDataset(Dataset):
@@ -40,7 +38,7 @@ class ShipPatchDataset(Dataset):
         self.config = config
         self.transform = transform
         self.is_training = is_training
-        self.preprocessing_method = config['model'].get(
+        self.preprocessing_method = config['data'].get(
             'preprocessing_method', 'adaptive')
         self.use_cache = use_cache
         self.cache = {}
@@ -414,14 +412,10 @@ def get_augmentation_transforms(config: Dict[str, Any]) -> Tuple[transforms.Comp
     return transforms.Compose(train_transforms), transforms.Compose(val_transforms)
 
 
-def create_data_loader(
-    manifest_path: str,
-    config: Dict[str, Any],
-) -> Tuple[DataLoader, DataLoader]:
+def create_data_loader(config: Dict[str, Any]) -> Tuple[DataLoader, DataLoader]:
     """Create training and validation data loaders"""
-
     # Load manifest
-    df = pd.read_csv(manifest_path)
+    df = pd.read_csv(config['data']['manifest_path'])
     df['has_ship'] = df['EncodedPixels'].apply(
         lambda x: 0 if pd.isna(x) else 1)
     df['patch_path'] = df['ImageId'].apply(
@@ -500,3 +494,69 @@ def create_data_loader(
     )
 
     return train_loader, val_loader
+
+
+def train_vit_model(config_path: str, output_dir: str,):
+    pl.seed_everything(42)
+    Path(output_dir).mkdir(parents=True, exist_ok=True)
+    # Load config
+    with open(config_path, 'r') as f:
+        config = yaml.safe_load(f)
+    
+    torch.backends.cudnn.benchmark = True
+    torch.backends.cuda.matmul.allow_tf32 = True
+
+    train_loader, val_loader = create_data_loader(config=config)
+    
+    vit_model = ViTShipClassifier(config=config)
+    
+    vit_checkpoint = config['model'].get('checkpoint_path', None)
+    
+    callbacks = [
+        ModelCheckpoint(
+            dirpath=os.path.join(output_dir, 'vit/checkpoints'),
+            filename='vit-{epoch:02d}-{val_acc:.3f}',
+            monitor='val_loss',
+            mode='max',
+            save_top_k=3,
+            save_last=True,
+            verbose=True,
+        ),
+        EarlyStopping(
+            monitor='val_loss',
+            patience=config['training'].get('early_stopping_patience', 10),
+            mode='min',
+        ),
+        LearningRateMonitor(logging_interval='epoch')
+    ]
+    logger = TensorBoardLogger(
+        save_dir=os.path.join(output_dir, 'vit'),
+        name='vit_logs',
+    )
+    
+    trainer = pl.Trainer(
+        max_epochs=config['training']['max_epochs'],
+        accelerator='gpu' if torch.cuda.is_available() else 'cpu',
+        devices=1 if torch.cuda.is_available() else None,
+        precision=config['training'].get('precision', 32),
+        callbacks=callbacks,
+        logger=logger,
+        log_every_n_steps=5,
+        deterministic=True,
+    )
+
+    # subprocess.run(['tensorboard', '--logdir', os.path.join(output_dir, 'vit/vit_logs')], timeout=30, capture_output=True, text=True)
+    print(f"\nPlease run 'tensorboard --logdir {output_dir}/vit/vit_logs' and open 'localhost:6006' in your browser to monitor training progress.\n")
+    if vit_checkpoint is not None and os.path.isfile(vit_checkpoint):
+        print(f"Resuming from checkpoint: {vit_checkpoint}")
+        trainer.fit(vit_model, train_loader, val_loader, ckpt_path=vit_checkpoint)
+    else:
+        print("Starting training...")
+        trainer.fit(vit_model, train_loader, val_loader)
+    
+    save_path = os.path.join(output_dir, 'vit_ship_classifier_final.pth')
+    torch.save(vit_model.state_dict(), save_path)
+    print(f"\nTraining complete! Model saved to {save_path}")
+
+    print(f"Best model checkpoint: {callbacks[0].best_model_path}")
+    print(f"Best validation accuracy: {callbacks[0].best_model_score:.4f}")

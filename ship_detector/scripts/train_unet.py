@@ -1,8 +1,9 @@
 import os
 import argparse
+import subprocess
 import ruamel.yaml as yaml
 from pathlib import Path
-from typing import Dict, Any, Optional, Tuple, List
+from typing import Dict, Any, Optional, Tuple
 import logging
 
 import torch
@@ -561,14 +562,11 @@ def handle_multi_ship_instances(mask: np.ndarray, min_ship_size: int = 10) -> np
     return filtered_mask
 
 
-def create_data_loaders(
-    manifest_path: str,
-    config: Dict[str, Any]
-) -> Tuple[DataLoader, DataLoader]:
+def create_data_loaders(config: Dict[str, Any]) -> Tuple[DataLoader, DataLoader]:
     """Create training and validation data loaders for segmentation."""
     
     # Load manifest
-    df = pd.read_csv(manifest_path)
+    df = pd.read_csv(config['data']['manifest_path'])
     df['has_ship'] = df['EncodedPixels'].notna().astype(int)
     df['patch_path'] = df['ImageId'].apply(
         lambda x: f"data/airbus-ship-detection/train_v2/{x}"
@@ -628,7 +626,7 @@ def create_data_loaders(
     return train_loader, val_loader
 
 
-def main(config_path: str, manifest_path: str, output_dir: str):
+def train_unet_model(config_path: str, output_dir: str):
     """Main training function."""
     
     # Load config
@@ -642,10 +640,12 @@ def main(config_path: str, manifest_path: str, output_dir: str):
     Path(output_dir).mkdir(parents=True, exist_ok=True)
     
     # Create data loaders
-    train_loader, val_loader = create_data_loaders(manifest_path, config)
-    
+    train_loader, val_loader = create_data_loaders(config)
+
     # Initialize model
     model = UNetShipSegmentation(config)
+    
+    unet_checkpoint = config['model'].get('checkpoint_path', None)
     
     # Print model info
     print(f"\nModel: U-Net with {config['model']['encoder']} encoder")
@@ -654,7 +654,7 @@ def main(config_path: str, manifest_path: str, output_dir: str):
     # Callbacks
     callbacks = [
         ModelCheckpoint(
-            dirpath=os.path.join(output_dir, 'checkpoints'),
+            dirpath=os.path.join(output_dir, 'unet/checkpoints'),
             filename='unet-{epoch:02d}-{val_iou:.3f}',
             monitor='val_iou',
             mode='max',
@@ -671,7 +671,7 @@ def main(config_path: str, manifest_path: str, output_dir: str):
     
     # Logger
     logger = TensorBoardLogger(
-        save_dir=output_dir,
+        save_dir=os.path.join(output_dir, 'unet'),
         name='unet_logs'
     )
     
@@ -687,9 +687,14 @@ def main(config_path: str, manifest_path: str, output_dir: str):
     )
     
     # Train
-    print(f"\nStarting training...")
+    print(f"Run `tensorboard --logdir {os.path.join(output_dir, 'unet/unet_logs')}` to monitor training")
     print(f"Output directory: {output_dir}")
-    trainer.fit(model, train_loader, val_loader)
+    if unet_checkpoint is not None and os.path.isfile(unet_checkpoint):
+        print(f"Resuming from checkpoint: {unet_checkpoint}")
+        trainer.fit(model, train_loader, val_loader, ckpt_path=unet_checkpoint)
+    else:
+        print(f"\nStarting training...")
+        trainer.fit(model, train_loader, val_loader)
     
     # Save final model
     final_path = os.path.join(output_dir, 'unet_ship_final.pt')
@@ -707,4 +712,4 @@ if __name__ == "__main__":
     parser.add_argument('--output-dir', type=str, default='./models/unet', help='Output directory')
     
     args = parser.parse_args()
-    main(args.config, args.manifest, args.output_dir)
+    train_unet_model(args.config, args.manifest, args.output_dir)
