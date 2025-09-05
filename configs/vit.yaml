@@ -6,7 +6,7 @@ model:
   freeze_backbone_epochs: 3  # Freeze backbone for first N epochs (0 to disable)
   download: false
   local_weights_path: model_states
-  preprocessing_method: adaptive  # Options: standard, adaptive, multiscale
+
 
 training:
   batch_size: 128  # Reduce if GPU OOM
@@ -22,18 +22,18 @@ training:
 
 optimizer:
   name: adamw  # Options: adam, adamw
-  lr: 8e-5  # Initial learning rate
+  lr: 0.00008  # Initial learning rate
   weight_decay: 0.02  # L2 regularization
 
 scheduler:
   name: cosine  # Options: cosine, reduce_on_plateau
   T_max: 30  # For cosine annealing (should match max_epochs)
-  eta_min: 1e-7  # Minimum learning rate
+  eta_min: 0.0000001  # Minimum learning rate
   warmup_epochs: 5  # Learning rate warmup
   # For reduce_on_plateau:
   # factor: 0.5
   # patience: 5
-  # min_lr: 1e-7
+  # min_lr: 0.0000001
 
 augmentation:
   hflip_prob: 0.5  # Horizontal flip probability
@@ -51,11 +51,14 @@ augmentation:
   preserv_small_objects: true
 
 data:
+  manifest_path: data\airbus-ship-detection\train_ship_segmentations_v2.csv
+
   val_split: 0.2  # Validation set proportion
   num_workers: 4  # DataLoader workers
   random_seed: 42  # For reproducibility
 
   # Preprocessing settings
+  preprocessing_method: adaptive  # Options: standard, adaptive, multiscale
   target_size: 224
   interpolation: area
   apply_sharpening: true
