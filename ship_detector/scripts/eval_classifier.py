@@ -3,10 +3,9 @@ import argparse
 import yaml
 import pandas as pd
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, Tuple
 
 import torch
-import torch.nn as nn
 from torch.utils.data import DataLoader
 import numpy as np
 from sklearn.metrics import (
@@ -18,7 +17,7 @@ import seaborn as sns
 from tqdm import tqdm
 
 # Import from training script
-from scripts.train_vit import ViTShipClassifier, ShipPatchDataset, get_augmentation_transforms
+from ship_detector.scripts.train_vit import ViTShipClassifier, ShipPatchDataset, get_augmentation_transforms
 
 
 def load_model(checkpoint_path: str, config: Dict) -> ViTShipClassifier:
@@ -28,7 +27,7 @@ def load_model(checkpoint_path: str, config: Dict) -> ViTShipClassifier:
     # Load weights
     if checkpoint_path.endswith('.ckpt'):
         # Pytorch Lightning checkpoint
-        checkpoint = torch.load(checkpoint_path, map_location='cpu')
+        checkpoint = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
         model.load_state_dict(checkpoint['state_dict'])
     else:
         # Regular PyTorch checkpoint
@@ -88,7 +87,7 @@ def compute_metrics(labels: np.ndarray, preds: np.ndarray, probs: np.ndarray) ->
     tn, fp, fn, tp = confusion_matrix(labels, preds).ravel()
 
     metrics['true_negatives'] = int(tn)
-    metrics['false_positive'] = int(fp)
+    metrics['false_positives'] = int(fp)
     metrics['false_negatives'] = int(fn)
     metrics['true_positives'] = int(tp)
 
@@ -123,7 +122,7 @@ def plot_confusion_matrix(
 
     plt.title('Confusion Matrix - Ship Detection',
               fontsize=14, fontweight='bold')
-    plt.ylabel('True Label', fontisize=12)
+    plt.ylabel('True Label', fontsize=12)
     plt.xlabel('Predicted Label', fontsize=12)
 
     # Add percentage annotations
@@ -225,7 +224,7 @@ def save_error_analysis(
     # Add predictions to dataframe
     eval_df = manifest_df.copy()
     eval_df['true_label'] = labels.astype(int)
-    eval_df['predictied_label'] = preds.astype(int)
+    eval_df['predicted_label'] = preds.astype(int)
     eval_df['prediction_prob'] = probs
     eval_df['correct'] = (labels == preds).astype(int)
 
@@ -233,7 +232,7 @@ def save_error_analysis(
     errors_df = eval_df[eval_df['correct'] == 0].copy()
 
     # Calculate confidence of errors
-    errors_df['cofnidence'] = np.where(
+    errors_df['confidence'] = np.where(
         errors_df['predicted_label'] == 1,
         errors_df['prediction_prob'],
         1 - errors_df['prediction_prob']
@@ -255,8 +254,8 @@ def save_error_analysis(
         'total_errors': len(errors_df),
         'false_positives': len(errors_df[errors_df['true_label'] == 0]),
         'false_negatives': len(errors_df[errors_df['true_label'] == 1]),
-        'avg_error_confidence': errors_df['confidence'].mean(),
-        'max_error_confidence': errors_df['confidence'].max(),
+        'avg_error_confidence': float(errors_df['confidence'].mean()),
+        'max_error_confidence': float(errors_df['confidence'].max()),
     }
 
     return stats
@@ -300,10 +299,10 @@ def main(
 
     # Create dataset and loader
     _, val_transform = get_augmentation_transforms(config)
-    dataset = ShipPatchDatast(eval_df, transform=val_transform)
+    dataset = ShipPatchDataset(eval_df, transform=val_transform)
     dataloader = DataLoader(
         dataset,
-        batch_size=config['trainig']['batch_size'],
+        batch_size=config['training']['batch_size'],
         shuffle=False,
         num_workers=config['data']['num_workers'],
         pin_memory=True
@@ -342,7 +341,7 @@ def main(
     # Generate visualization
     plot_confusion_matrix(labels, preds, os.path.join(
         output_dir, 'confusion_matrix.png'))
-    plot_roc_curve(labels, probs, os.path.join('output_dir', 'roc_curve.png'))
+    plot_roc_curve(labels, probs, os.path.join(output_dir, 'roc_curve.png'))
     plot_prediction_distribution(
         labels, probs, os.path.join(output_dir, 'prediction_dist.png'))
 
