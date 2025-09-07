@@ -1,6 +1,8 @@
 import argparse
 import yaml
 from typing import Dict, Any
+import cv2
+import pandas as pd
 
 
 def load_config(config_path: str) ->  Dict[str, Any]:
@@ -26,3 +28,20 @@ def get_task(args):
         return 'train_unet'
     else:
         raise ValueError("No valid task specified. Use -train_vit or -train_unet.")
+
+
+def rle_decode(rle, shape):
+    '''
+    rle: rle字符串
+    shape: (height, width)
+    '''
+    import numpy as np
+    mask = np.zeros(shape[0] * shape[1], dtype=np.uint8)
+    if pd.isna(rle):
+        return mask.reshape(shape)
+    s = rle.split()
+    starts, lengths = [np.asarray(x, dtype=int) for x in (s[0::2], s[1::2])]
+    starts -= 1
+    for start, length in zip(starts, lengths):
+        mask[start:start+length] = 1
+    return mask.reshape(shape, order='F')  # 注意order='F'（列优先）
