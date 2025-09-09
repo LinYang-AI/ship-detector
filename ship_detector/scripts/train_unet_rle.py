@@ -547,6 +547,8 @@ def create_data_loaders(
     
     # Load manifest
     df = pd.read_csv(manifest_path)
+    df['has_ship'] = df['EncodedPixels'].notna().astype(int)
+    df['patch_path'] = df['ImageId'].apply(lambda x: f"data/airbus-ship-detection/train_v2/{x}")
     logger.info(f"Loaded manifest with {len(df)} entries")
     
     # Filter for ship patches if specified
