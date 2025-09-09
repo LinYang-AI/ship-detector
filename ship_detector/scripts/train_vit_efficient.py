@@ -16,6 +16,7 @@ import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader, IterableDataset
 import pytorch_lightning as pl
 from pytorch_lightning.callbacks import ModelCheckpoint, EarlyStopping, LearningRateMonitor
+from pytorch_lightning.loggers import TensorBoardLogger
 
 import timm
 import pandas as pd
@@ -131,6 +132,7 @@ class LazyLoadDataset(Dataset):
     
     def __init__(
         self,
+        config: Dict,
         manifest_df: pd.DataFrame,
         transform: Optional[transforms.Compose] = None,
         cache_size: int = 0,  # Number of images to cache in memory
@@ -140,6 +142,10 @@ class LazyLoadDataset(Dataset):
         self.transform = transform
         self.cache_size = cache_size
         self.preload_batch = preload_batch
+        self.config = config
+        self.preprocessing_method = config['data'].get(
+            'preprocessing_method', 'adaptive'
+        )
         
         # LRU cache for recently accessed images
         if cache_size > 0:
@@ -186,7 +192,7 @@ class LazyLoadDataset(Dataset):
         # Get label
         row = self.manifest.iloc[idx]
         label = torch.tensor(row['has_ship'], dtype=torch.float32)
-        
+        image = self.preprocess_image(image)
         # Apply transforms
         if self.transform:
             image = Image.fromarray(image)
@@ -195,6 +201,60 @@ class LazyLoadDataset(Dataset):
             image = torch.from_numpy(image).permute(2, 0, 1).float() / 255.0
         
         return image, label
+    
+    def preprocess_image(self, image):
+        """Apply ship-preserving preprocessing"""
+        if self.preprocessing_method == 'multiscale':
+            return self.multiscale_resize_with_context(image)
+        elif self.preprocessing_method == 'adaptive':
+            return  self.adaptive_resize_preserve_ships(image)
+        else:
+            return cv2.resize(image, (224, 224), interpolation=cv2.INTER_AREA)
+                
+    def multiscale_resize_with_context(self, image):
+        """Multi-scale preprocessing"""
+        h, w = image.shape[:2]
+
+        # Full image view (global context)
+        global_view = cv2.resize(
+            image, (112, 112), interpolation=cv2.INTER_AREA)
+
+        # Center crop view (detail preservation)
+        center = h // 2
+        crop_size = min(384, h)  # Handle smaller images
+        start = max(0, center - crop_size // 2)
+        end = min(h, start + crop_size)
+        start = max(0, end - crop_size)  # Ensure crop_size
+
+        center_crop = image[start:end, start:end]
+        detail_view = cv2.resize(
+            center_crop, (112, 112), interpolation=cv2.INTER_AREA)
+
+        # Combine views
+        combined = np.zeros((224, 224, 3), dtype=image.dtype)
+        combined[:112, :112] = global_view
+        combined[:112, 112:] = detail_view
+        combined[112:, :] = cv2.resize(
+            image, (224, 112), interpolation=cv2.INTER_AREA)
+
+        return combined
+
+    def adaptive_resize_preserve_ships(self, image):
+        """Adaptive resize with ship preservation"""
+        # Use INTER_AREA for better small object preservation
+        resized = cv2.resize(image, (224, 224), interpolation=cv2.INTER_AREA)
+
+        # Light sharpening to enhance edges
+        if self.config['data'].get('apply_sharpening', False):
+            strength = self.config['data'].get('sharpening_strength', 0.3)
+            kernel = np.array([[-0.1, -0.1, -0.1],
+                               [-0.1, 1 + 0.8 * strength, -0.1],
+                               [-0.1, -0.1, -0.1]])
+            sharpened = cv2.filter2D(resized, -1, kernel)
+            resized = cv2.addWeighted(
+                resized, 1 - strength, sharpened, strength, 0)
+
+        return np.clip(resized, 0, 255).astype(np.uint8)
     
     def clear_cache(self):
         """Clear the image cache to free memory."""
@@ -208,6 +268,7 @@ class StreamingDataset(IterableDataset):
     
     def __init__(
         self,
+        config: Dict[str, Any],
         manifest_path: str,
         transform: Optional[transforms.Compose] = None,
         chunk_size: int = 1000,
@@ -217,6 +278,9 @@ class StreamingDataset(IterableDataset):
         self.transform = transform
         self.chunk_size = chunk_size
         self.shuffle_buffer = shuffle_buffer
+        self.preprocessing_method = config['data'].get(
+            'preprocessing_method', 'adaptive'
+        )
     
     def __iter__(self):
         # Read manifest in chunks
@@ -227,20 +291,115 @@ class StreamingDataset(IterableDataset):
             for _, row in chunk_df.iterrows():
                 # Load image
                 try:
-                    img = Image.open(row['patch_path']).convert('RGB')
+                    image = Image.imread(row['patch_path'])
+                    if image is None:
+                        raise FileNotFoundError(f"Image not found: {row['patch_path']}")
+                    image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+                    if image.shape[:2] != (768, 768):
+                        image = cv2.resize(image, (768, 768), interpolation=cv2.INTER_AREA)
+                    image = self.preprocess_image(image)
+                    image = Image.fromarray(image)
                     
                     if self.transform:
-                        img = self.transform(img)
-                    else:
-                        img = transforms.ToTensor()(img)
-                    
+                        if isinstance(self.transform, list):
+                            image = transforms.Compose(self.transform)(image)
+                        else:
+                            image = self.transform(image)
                     label = torch.tensor(row['has_ship'], dtype=torch.float32)
+
+                    yield image, label
+
+                    # if self.transform:
+                    #     img = self.transform(img)
+                    # else:
+                    #     img = transforms.ToTensor()(img)
                     
-                    yield img, label
+                    # label = torch.tensor(row['has_ship'], dtype=torch.float32)
+                    
+                    # yield img, label
                     
                 except Exception as e:
                     print(f"Error loading {row['patch_path']}: {e}")
                     continue
+    
+    def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
+        row = self.manifest.iloc[idx]
+        # Load from cache or disk
+        image = cv2.imread(row['patch_path'])
+        if image is None:
+            raise FileNotFoundError(f"Image not found: {row['patch_path']}")
+        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        # Check if it's actually 768x768
+        if image.shape[:2] != (768, 768):
+            image = cv2.resize(image, (768, 768), interpolation=cv2.INTER_AREA)
+        # Apply ship-preserving preprocessing
+        image = self.preprocess_image(image)
+        # Convert to PIL for standard transforms
+        image = Image.fromarray(image)
+        # transforms.COmpose or signle callable
+        if self.transform:
+            if isinstance(self.transform, list):
+                
+                # If mistakenly passed a list, compose it
+                image = transforms.Compose(self.transform)(image)
+            else:
+                image = self.transform(image)
+        label = torch.tensor(row['has_ship'], dtype=torch.float32)
+        return image, label
+    
+    def preprocess_image(self, image):
+        """Apply ship-preserving preprocessing"""
+        if self.preprocessing_method == 'multiscale':
+            return self.multiscale_resize_with_context(image)
+        elif self.preprocessing_method == 'adaptive':
+            return  self.adaptive_resize_preserve_ships(image)
+        else:
+            return cv2.resize(image, (224, 224), interpolation=cv2.INTER_AREA)
+                
+    def multiscale_resize_with_context(self, image):
+        """Multi-scale preprocessing"""
+        h, w = image.shape[:2]
+
+        # Full image view (global context)
+        global_view = cv2.resize(
+            image, (112, 112), interpolation=cv2.INTER_AREA)
+
+        # Center crop view (detail preservation)
+        center = h // 2
+        crop_size = min(384, h)  # Handle smaller images
+        start = max(0, center - crop_size // 2)
+        end = min(h, start + crop_size)
+        start = max(0, end - crop_size)  # Ensure crop_size
+
+        center_crop = image[start:end, start:end]
+        detail_view = cv2.resize(
+            center_crop, (112, 112), interpolation=cv2.INTER_AREA)
+
+        # Combine views
+        combined = np.zeros((224, 224, 3), dtype=image.dtype)
+        combined[:112, :112] = global_view
+        combined[:112, 112:] = detail_view
+        combined[112:, :] = cv2.resize(
+            image, (224, 112), interpolation=cv2.INTER_AREA)
+
+        return combined
+
+    def adaptive_resize_preserve_ships(self, image):
+        """Adaptive resize with ship preservation"""
+        # Use INTER_AREA for better small object preservation
+        resized = cv2.resize(image, (224, 224), interpolation=cv2.INTER_AREA)
+
+        # Light sharpening to enhance edges
+        if self.config['data'].get('apply_sharpening', False):
+            strength = self.config['data'].get('sharpening_strength', 0.3)
+            kernel = np.array([[-0.1, -0.1, -0.1],
+                               [-0.1, 1 + 0.8 * strength, -0.1],
+                               [-0.1, -0.1, -0.1]])
+            sharpened = cv2.filter2D(resized, -1, kernel)
+            resized = cv2.addWeighted(
+                resized, 1 - strength, sharpened, strength, 0)
+
+        return np.clip(resized, 0, 255).astype(np.uint8)
 
 
 # ============================================================================
@@ -429,6 +588,7 @@ class EfficientViTClassifier(pl.LightningModule):
         # Log metrics
         self.log('train_loss', loss, on_step=False, on_epoch=True, prog_bar=True)
         self.log('train_acc', acc, on_step=False, on_epoch=True, prog_bar=True)
+
         
         return loss
     
@@ -445,8 +605,8 @@ class EfficientViTClassifier(pl.LightningModule):
         acc = (preds == labels).float().mean()
         
         # Log metrics
-        self.log('val_loss', loss, on_step=False, on_epoch=True, prog_bar=True)
-        self.log('val_acc', acc, on_step=False, on_epoch=True, prog_bar=True)
+        self.log('val_loss', loss, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
+        self.log('val_acc', acc, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
         
         return {
             'loss': loss,
@@ -496,149 +656,6 @@ class EfficientViTClassifier(pl.LightningModule):
             }
         else:
             return optimizer
-
-# class EfficientViTClassifier(pl.LightningModule):
-#     """Memory-efficient ViT with LoRA for ship classification."""
-    
-#     def __init__(self, config: Dict[str, Any]):
-#         super().__init__()
-#         self.save_hyperparameters(config)
-        
-#         # Load pretrained ViT
-#         self.model = timm.create_model(
-#             config['model']['name'],
-#             pretrained=config['model']['pretrained'],
-#             num_classes=1
-#         )
-        
-#         # Apply LoRA if enabled
-#         if config['model'].get('use_lora', False):
-#             self.model = add_lora_to_vit(
-#                 self.model,
-#                 rank=config['model'].get('lora_rank', 16),
-#                 alpha=config['model'].get('lora_alpha', 16.0),
-#                 target_modules=config['model'].get('lora_target_modules', ['qkv', 'proj'])
-#             )
-#             self._freeze_base_model()
-#             print(f"LoRA enabled with rank={config['model'].get('lora_rank', 16)}")
-        
-#         # Loss function
-#         pos_weight = torch.tensor([config['training'].get('pos_weight', 1.0)])
-#         self.criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
-        
-#         # Gradient checkpointing for memory efficiency
-#         if config['model'].get('gradient_checkpointing', False):
-#             self.model.set_grad_checkpointing(enable=True)
-        
-#         # Mixed precision
-#         self.automatic_optimization = True
-        
-#         # Log model stats
-#         self._log_model_stats()
-    
-#     def _freeze_base_model(self):
-#         """Freeze base model parameters when using LoRA."""
-#         for name, param in self.model.named_parameters():
-#             if 'lora' not in name:
-#                 param.requires_grad = False
-    
-#     def _log_model_stats(self):
-#         """Log model parameter statistics."""
-#         total_params = sum(p.numel() for p in self.parameters())
-#         trainable_params = sum(p.numel() for p in self.parameters() if p.requires_grad)
-        
-#         print("="*50)
-#         print(f"Total parameters: {total_params:,}")
-#         print(f"Trainable parameters: {trainable_params:,}")
-#         print(f"Reduction: {(1 - trainable_params/total_params)*100:.1f}%")
-#         print("="*50)
-    
-#     def forward(self, x: torch.Tensor) -> torch.Tensor:
-#         return self.model(x)
-    
-#     def training_step(self, batch, batch_idx):
-#         images, labels = batch
-        
-#         # Forward pass with gradient accumulation
-#         outputs = self(images).squeeze()
-#         loss = self.criterion(outputs, labels)
-        
-#         # Calculate accuracy
-#         preds = torch.sigmoid(outputs) > 0.5
-#         acc = (preds == labels).float().mean()
-        
-#         # Log metrics
-#         self.log('train_loss', loss, on_step=False, on_epoch=True, prog_bar=True)
-#         self.log('train_acc', acc, on_step=False, on_epoch=True, prog_bar=True)
-        
-#         # Free up memory periodically
-#         if batch_idx % 100 == 0:
-#             gc.collect()
-#             if torch.cuda.is_available():
-#                 torch.cuda.empty_cache()
-        
-#         return loss
-    
-#     def validation_step(self, batch, batch_idx):
-#         images, labels = batch
-#         outputs = self(images).squeeze()
-#         loss = self.criterion(outputs, labels)
-        
-#         probs = torch.sigmoid(outputs)
-#         preds = probs > 0.5
-#         acc = (preds == labels).float().mean()
-        
-#         self.log('val_loss', loss, on_step=False, on_epoch=True, prog_bar=True)
-#         self.log('val_acc', acc, on_step=False, on_epoch=True, prog_bar=True)
-        
-#         return {'loss': loss, 'acc': acc}
-    
-#     def configure_optimizers(self):
-#         # Only optimize LoRA parameters if enabled
-#         if self.hparams['model'].get('use_lora', False):
-#             # Only LoRA parameters
-#             lora_params = [p for n, p in self.named_parameters() if 'lora' in n and p.requires_grad]
-#             params = lora_params
-#         else:
-#             # All parameters
-#             params = self.parameters()
-        
-#         # Optimizer
-#         opt_config = self.hparams['optimizer']
-#         if opt_config['name'] == 'adam':
-#             optimizer = torch.optim.Adam(
-#                 params,
-#                 lr=opt_config['lr'],
-#                 weight_decay=opt_config.get('weight_decay', 0)
-#             )
-#         elif opt_config['name'] == 'adamw':
-#             optimizer = torch.optim.AdamW(
-#                 params,
-#                 lr=opt_config['lr'],
-#                 weight_decay=opt_config.get('weight_decay', 0.01)
-#             )
-#         elif opt_config['name'] == '8bit_adam':
-#             # Use 8-bit Adam for memory efficiency
-#             import bitsandbytes as bnb
-#             optimizer = bnb.optim.Adam8bit(
-#                 params,
-#                 lr=opt_config['lr'],
-#                 weight_decay=opt_config.get('weight_decay', 0.01)
-#             )
-        
-#         # Scheduler
-#         scheduler_config = self.hparams['scheduler']
-#         if scheduler_config['name'] == 'cosine':
-#             scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-#                 optimizer,
-#                 T_max=scheduler_config['T_max']
-#             )
-#             return {
-#                 'optimizer': optimizer,
-#                 'lr_scheduler': scheduler
-#             }
-        
-#         return optimizer
 
 
 # ============================================================================
@@ -690,6 +707,61 @@ class MemoryMonitor:
 # Data Loading Utilities
 # ============================================================================
 
+def get_augmentation_transforms(config: Dict[str, Any]) -> Tuple[transforms.Compose, transforms.Compose]:
+    aug_config = config['augmentation']
+    
+    # Training transforms
+    train_transforms = []
+    
+    # Geometric augmentations (ship-aware)
+    train_transforms.extend([
+        transforms.RandomHorizontalFlip(p=aug_config.get('hflip_prob', 0.5)),
+        transforms.RandomVerticalFlip(p=aug_config.get('vflip_prob', 0.5)),
+    ])
+    
+    if aug_config.get('rotation', False):
+        train_transforms.append(
+            transforms.RandomRotation(degrees=0.5)
+        )
+    
+    # Color augmentations (conservative for ship detection)
+    if aug_config.get('color_jitter', False):
+        brightness = aug_config.get('brightness_range', [0.8, 1.2])
+        contrast = aug_config.get('contrast_range', [0.9, 1.1])
+        train_transforms.append(
+            transforms.ColorJitter(
+                brightness=brightness,
+                contrast=contrast,
+                saturation=0.1,
+                hue=0.05
+            )
+        )
+    
+    if aug_config.get('gaussian_blur_prob', 0) > 0:
+        train_transforms.append(
+            transforms.RandomApply([
+                transforms.GaussianBlur(kernel_size=3, sigma=(0.1, 0.5))
+            ], p=aug_config['gaussian_blur_prob'])
+        )
+    
+    train_transforms.extend([
+        transforms.ToTensor(),
+        transforms.Normalize(
+            mean=[0.485, 0.456, 0.406],
+            std=[0.229, 0.224, 0.225]
+        )
+    ])
+    
+    val_transforms = [
+        transforms.ToTensor(),
+        transforms.Normalize(
+            mean=[0.485, 0.456, 0.406],
+            std=[0.229, 0.224, 0.225]
+        )
+    ]
+
+    return transforms.Compose(train_transforms), transforms.Compose(val_transforms)
+
 def create_efficient_data_loaders(
     manifest_path: str,
     config: Dict[str, Any],
@@ -708,7 +780,14 @@ def create_efficient_data_loaders(
     # Load manifest
     df = pd.read_csv(manifest_path)
     df['has_ship'] = df['EncodedPixels'].notnull().astype(int)
-    df['patch_path'] = df['ImageId'].apply(lambda x: os.path.join(config['data']['train'], x))
+    df['patch_path'] = df['ImageId'].apply(lambda x: f"{config['data']['train']}/{x}")
+    # # Randomly select half
+    # df, _ = train_test_split(
+    #     df,
+    #     test_size=0.5,
+    #     random_state=config['data']['random_seed'],
+    #     stratify=df['has_ship']
+    # )
     
     # Check memory before loading
     if memory_monitor and memory_monitor.check_memory_critical():
@@ -728,23 +807,7 @@ def create_efficient_data_loaders(
     print(f"Training samples: {len(train_df)} (Ships: {train_df['has_ship'].sum()})")
     print(f"Validation samples: {len(val_df)} (Ships: {val_df['has_ship'].sum()})")
     
-    # Create transforms
-    normalize = transforms.Normalize(
-        mean=[0.485, 0.456, 0.406],
-        std=[0.229, 0.224, 0.225]
-    )
-    
-    train_transform = transforms.Compose([
-        transforms.RandomHorizontalFlip(p=0.5),
-        transforms.RandomVerticalFlip(p=0.5),
-        transforms.ToTensor(),
-        normalize
-    ])
-    
-    val_transform = transforms.Compose([
-        transforms.ToTensor(),
-        normalize
-    ])
+    train_transform, val_transform = get_augmentation_transforms(config)
     
     # Create datasets
     if use_streaming:
@@ -755,22 +818,26 @@ def create_efficient_data_loaders(
         val_df.to_csv(val_manifest_path, index=False)
         
         train_dataset = StreamingDataset(
+            config,
             train_manifest_path,
             transform=train_transform,
             chunk_size=config['data'].get('chunk_size', 1000)
         )
         val_dataset = StreamingDataset(
+            config,
             val_manifest_path,
             transform=val_transform,
             chunk_size=config['data'].get('chunk_size', 1000)
         )
     else:
         train_dataset = LazyLoadDataset(
+            config,
             train_df,
             transform=train_transform,
             cache_size=config['data'].get('cache_size', 100)
         )
         val_dataset = LazyLoadDataset(
+            config,
             val_df,
             transform=val_transform,
             cache_size=config['data'].get('cache_size', 100)
