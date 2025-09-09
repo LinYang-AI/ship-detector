@@ -5,7 +5,7 @@ This computer vision project is built upon a kaggle competition. The data descri
 
 The model is created on pretrained ViT model (vit_base_patch16_224) that is available from Lightning.ai.
 
-Bellow shows the model loss and accuracy on training set and validation set. Due to limit computation resource, the training is only accomplished for 20 epochs.
+Bellow shows the model loss and accuracy on training set and validation set. Due to limited computation resource, the training is only accomplished for 17 epochs.
 
 
 Model loss on training and validation sets
