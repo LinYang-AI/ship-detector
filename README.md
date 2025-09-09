@@ -10,8 +10,8 @@ Bellow shows the model loss and accuracy on training set and validation set. Due
 
 Model loss on training and validation sets
 
-![Model Loss](./assets/vit - loss.png)
+![Model Loss](./assets/vit_loss.png)
 
 Model accuracy on training and validation sets
 
-![Model Acc](./assets/vit - accuracy.png)
+![Model Acc](./assets/vit_accuracy.png)
