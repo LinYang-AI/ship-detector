@@ -273,56 +273,56 @@ class YOLODatasetCreator:
         
         logger.info(f"Saved verification iamges to {vis_dir}")
         
-    def create_synthetic_data(output_dir: str, num_images: int = 10):
-        """Create synthetic dataset for testing."""
+def create_synthetic_data(output_dir: str, num_images: int = 10):
+    """Create synthetic dataset for testing."""
+    
+    output_dir = Path(output_dir)
+    
+    # Create directories
+    images_dir = output_dir / 'images'
+    images_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Create manifest
+    manifest_data = []
+    rle_processor = RLEProcessor()
+    
+    for i in range(num_images):
+        # Create synthetic image (ocean with ships):
+        image = np.ones((768, 768, 3), dtype=np.uint8) * 50  # Dark blue ocean
+        mask = np.zeros((768, 768), dtype=np.uint8)
         
-        output_dir = Path(output_dir)
+        # Add random ships
+        num_ships = np.random.randint(1, 5)
+        for j in range(num_ships):
+            # Random ship position and size
+            x = np.random.randint(50, 668)
+            y = np.random.randint(50, 668)
+            w = np.random.randint(30, 100)
+            h = np.random.randint(15, 50)
+            
+            angle = np.random.randint(0, 180)
+            
+            # Draw ship (rotated rectangle)
+            center = (x + w//2, y + h//2)
+            rect = cv2.getRotationMatrix2D(center, angle, 1.0)
+            
+            # Create ship shape
+            cv2.ellipse(image, center, (w//2, h//2), angle, 0, 360, (200, 200, 200), -1)
+            cv2.ellipse(mask, center, (w//2, h//2), angle, 0, 360, 255, -1)
+            
+        # Save image
+        image_name = f"synthetic_{i:04d}.jpg"
+        cv2.imwrite(str(images_dir / image_name), image)
         
-        # Create directories
-        images_dir = output_dir / 'images'
-        images_dir.mkdir(parents=True, exist_ok=True)
+        # Encode mask to RLE
+        rle = rle_processor.encode_rle(mask)
         
-        # Create manifest
-        manifest_data = []
-        rle_processor = RLEProcessor()
+        manifest_data.append({
+            'ImageId': image_name,
+            'EncodedPixels': rle
+        })
         
-        for i in range(num_images):
-            # Create synthetic image (ocean with ships):
-            image = np.ones((768, 768, 3), dtype=np.uint8) * 50  # Dark blue ocean
-            mask = np.zeros((768, 768), dtype=np.uint8)
-            
-            # Add random ships
-            num_ships = np.random.randint(1, 5)
-            for j in range(num_ships):
-                # Random ship position and size
-                x = np.random.randint(50, 668)
-                y = np.random.randint(50, 668)
-                w = np.random.randint(30, 100)
-                h = np.random.randint(15, 50)
-                
-                angle = np.random.randint(0, 180)
-                
-                # Draw ship (rotated rectangle)
-                center = (x + w//2, y + h//2)
-                rect = cv2.getRotationMatrix2D(center, angle, 1.0)
-                
-                # Create ship shape
-                cv2.ellipse(image, center, (w//2, h//2), angle, 0, 360, (200, 200, 200), -1)
-                cv2.ellipse(mask, center, (w//2, h//2), angle, 0, 360, 255, -1)
-                
-            # Save image
-            image_name = f"synthetic_{i:04d}.jpg"
-            cv2.imwrite(str(images_dir / image_name), image)
-            
-            # Encode mask to RLE
-            rle = rle_processor.encode_rle(mask)
-            
-            manifest_data.append({
-                'ImageId': image_name,
-                'EncodedPixels': rle
-            })
-            
-            # Save manifest
-            manifest_path = output_dir / 'train_synthetic.csv'
-            pd.DataFrame(manifest_data).to_csv(manifest_path, index=False)
+        # Save manifest
+        manifest_path = output_dir / 'train_synthetic.csv'
+        pd.DataFrame(manifest_data).to_csv(manifest_path, index=False)
             
