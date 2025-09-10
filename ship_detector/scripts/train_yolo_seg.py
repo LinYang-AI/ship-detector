@@ -53,7 +53,7 @@ class YOLOShipSegmentation:
             'save': True,
             'save_period': self.config['training']['save_period'],
             'cache': self.config['cache'],
-            'device': self.config['device'],
+            'device': [self.config['device']],
             'workers': self.config['data']['num_workers'],
             'project': self.config['paths']['project'],
             'name': self.config['paths']['name'],
@@ -85,7 +85,7 @@ class YOLOShipSegmentation:
             'warmup_momentum': self.config['training']['warmup_momentum'],
             'warmup_bias_lr': self.config['training']['warmup_bias_lr'],
             'box': self.config['training']['box_loss_gain'],
-            'seg': self.config['training']['seg_loss_gain'],
+            # 'seg': self.config['training']['seg_loss_gain'],
             'cls': self.config['training']['cls_loss_gain'],
             'dfl': self.config['training']['dfl_loss_gain'],
             
@@ -94,7 +94,7 @@ class YOLOShipSegmentation:
             'hsv_s': self.config['data']['augmentation']['hsv_s'],
             'hsv_v': self.config['data']['augmentation']['hsv_v'],
             'degrees': self.config['data']['augmentation']['degrees'],
-            'translate': self.config['date']['augmentation']['translate'],
+            'translate': self.config['data']['augmentation']['translate'],
             'scale': self.config['data']['augmentation']['scale'],
             'shear': self.config['data']['augmentation']['shear'],
             'perspective': self.config['data']['augmentation']['perspective'],
@@ -264,11 +264,11 @@ def visualize_predictions(image_path: str, results, output_path: str):
 def run_yolo(
     config_path: str, 
     data_path: str, 
-    mode: Literal['train', 'val', 'predict', 'export'], 
-    weights_path: str, 
-    img_source: str, 
-    resume: bool, 
-    export_format: Literal['onnx', 'torchscript', 'coreml', 'tflite']):
+    mode: Literal['train', 'val', 'predict', 'export'] = 'train', 
+    weights_path: str | None = None, 
+    img_source: str | None = None, 
+    resume: bool = False, 
+    export_format: Literal['onnx', 'torchscript', 'coreml', 'tflite'] = 'torchscript'):
     
     yolo = YOLOShipSegmentation(config_path)
     
