@@ -2,7 +2,7 @@ import os
 import yaml
 from pathlib import Path
 import logging
-from typing import Literal
+from typing import Literal, Optional
 
 import torch
 import numpy as np
