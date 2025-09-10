@@ -170,7 +170,7 @@ class YOLOShipSegmentation:
             device=self.config['device'],
             retina_masks=self.config['inference']['retina_masks'],
             classes=[0],
-            agnostic-nms=False,
+            agnostic_nms=False,
             save=False,
             save_txt=False,
             save_config=False,
