@@ -219,7 +219,7 @@ def visualize_predictions(image_path: str, results, output_path: str):
         """
     # Load image
     image = cv2.imread(image_path)
-    ovelay = image.copy()
+    overlay = image.copy()
     
     # Process results
     for r in results:
