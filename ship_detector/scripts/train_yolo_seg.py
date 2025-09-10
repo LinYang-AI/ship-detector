@@ -10,6 +10,7 @@ import pandas as pd
 from ultralytics import YOLO
 import cv2
 from tqdm import tqdm
+from ship_detector.scripts.utils import load_config
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -23,6 +24,7 @@ class YOLOShipSegmentation:
         Args:
             config_path: Path to training configuration YAML
         """
+        self.config = load_config(config_path)
         # Initialize model
         model_name = self.config['model']['architecture']
         if self.config['model']['pretrained']:
