@@ -1,0 +1,120 @@
+# SAM Configuration for Ship Segmentation
+# Purpose: Configuration for Segment Anything Model adaptation to ship detection
+
+# Model Configuration
+model:
+  checkpoint_type: "vit_h"  # Options: vit_h (huge), vit_l (large), vit_b (base)
+  checkpoint_url: "https://dl.fbaipublicfiles.com/segment_anything/sam_vit_h_4b8939.pth"
+  checkpoint_path: "models/sam/sam_vit_h.pth"  # Local cache path
+  device: "cuda"
+  
+# Prompt Generation Strategy
+prompting:
+  mode: "auto"  # Options: auto, points, boxes, hybrid
+  
+  # Automatic mask generation settings
+  auto:
+    points_per_side: 32  # Grid density for point prompts
+    pred_iou_thresh: 0.88  # Confidence threshold
+    stability_score_thresh: 0.95  # Mask stability threshold
+    crop_n_layers: 1  # Number of crop layers for multi-scale
+    crop_n_points_downscale_factor: 2
+    min_mask_region_area: 100  # Minimum mask area in pixels
+    
+  # Point prompt settings (from ViT classifier heatmap)
+  points:
+    num_points: 5  # Points per ship detection
+    use_negative_points: true  # Add negative points for background
+    point_confidence_thresh: 0.7
+    
+  # Box prompt settings (from ViT classifier regions)
+  boxes:
+    box_confidence_thresh: 0.5
+    box_nms_thresh: 0.5  # NMS for overlapping boxes
+    expand_ratio: 1.1  # Expand detected boxes by this ratio
+
+# Post-processing Configuration
+postprocess:
+  # Mask refinement
+  use_crf: false  # Conditional Random Field refinement
+  morphology:
+    enable: true
+    kernel_size: 3
+    operations: ["close", "open"]  # Order of morphological operations
+    
+  # Filtering
+  min_area: 50  # Minimum ship area in pixels
+  max_area: 50000  # Maximum ship area in pixels  
+  min_solidity: 0.5  # Shape regularity threshold
+  
+  # NMS for overlapping masks
+  mask_nms_thresh: 0.5
+  
+# Fine-tuning Configuration (optional)
+finetune:
+  enable: true  # Set true to fine-tune on ship data
+  freeze_image_encoder: true  # Freeze the ViT backbone
+  freeze_prompt_encoder: true  # Freeze prompt encoder
+  
+  # Training settings (if fine-tuning)
+  learning_rate: 0.00001
+  weight_decay: 0.0001
+  batch_size: 4  # Small due to SAM memory requirements
+  num_epochs: 10
+  
+  # Loss weights for fine-tuning
+  focal_loss_weight: 1.0
+  dice_loss_weight: 1.0
+  iou_loss_weight: 1.0
+
+# Data Configuration
+data:
+  patch_size: 1024  # SAM works better with larger patches
+  overlap: 0.2
+  batch_size: 1  # SAM is memory intensive
+  num_workers: 4
+  manifest_path: "data/airbus-ship-detection/train_ship_segmentations_v2.csv"
+
+  # Augmentation for fine-tuning
+  augmentation:
+    resize: [1024, 1024]
+    normalize: true
+    random_flip: true
+    random_rotate: true
+    color_jitter: false  # SAM is sensitive to color changes
+
+# Inference Configuration  
+inference:
+  batch_size: 1
+  use_half_precision: false  # FP16 for faster inference
+  multimask_output: true  # Generate multiple mask proposals
+  max_masks_per_image: 100  # Maximum ships to detect
+  
+  # Ensemble settings
+  ensemble:
+    enable: false
+    models: ["vit_h", "vit_l"]  # Ensemble different SAM sizes
+    aggregate: "union"  # union, intersection, or voting
+
+# Integration with ViT Classifier
+vit_integration:
+  use_vit_prompts: false  # Use ViT heatmaps as prompts
+  vit_checkpoint: "outputs/checkpoints/vit-epoch=03-val_acc=0.967.ckpt"
+  confidence_weight: true  # Weight prompts by ViT confidence
+  heatmap_threshold: 0.3  # Threshold for heatmap to prompt conversion
+
+# Evaluation Metrics
+metrics:
+  compute_iou: true
+  compute_dice: true
+  compute_f1: true
+  compute_boundary_iou: true  # Good for ship contours
+  save_visualizations: true
+  visualization_freq: 10  # Save every N images
+
+# Hardware Optimization
+optimization:
+  compile_model: false  # PyTorch 2.0 compilation
+  use_sdpa: true  # Scaled dot-product attention
+  offload_to_cpu: false  # For limited GPU memory
+  gradient_checkpointing: false  # For fine-tuning with limited memory

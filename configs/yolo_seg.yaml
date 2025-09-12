@@ -1,0 +1,80 @@
+# YOLOv8 Segmentation Configuration for Ship Detection
+# Purpose: Configuration for training YOLOv8-seg model on ship segmentation task
+
+# Model Configuration
+model:
+  architecture: "yolov8n-seg"  # Options: yolov8n-seg, yolov8s-seg, yolov8m-seg, yolov8l-seg, yolov8x-seg
+  pretrained: true  # Use COCO pretrained weights
+  num_classes: 1  # Just ships
+  
+# Data Configuration
+data:
+  image_size: 640  # YOLOv8 default input size
+  batch_size: 16  # Adjust based on GPU memory
+  num_workers: 4
+  train_manifest: "data/train_manifest.csv"
+  val_manifest: "data/val_manifest.csv"
+  test_manifest: "data/test_manifest.csv"
+  
+  # Augmentation settings
+  augmentation:
+    hsv_h: 0.015  # Hue augmentation
+    hsv_s: 0.7    # Saturation augmentation  
+    hsv_v: 0.4    # Value augmentation
+    degrees: 0.0  # Rotation (+/- degrees)
+    translate: 0.1  # Translation (+/- fraction)
+    scale: 0.5    # Scale gain (+/- fraction)
+    shear: 0.0    # Shear angle (+/- degrees)
+    perspective: 0.0  # Perspective distortion
+    flipud: 0.0   # Vertical flip probability
+    fliplr: 0.5   # Horizontal flip probability
+    mosaic: 1.0   # Mosaic augmentation probability
+    mixup: 0.0    # MixUp augmentation probability
+    copy_paste: 0.0  # Copy-paste augmentation probability
+
+# Training Configuration
+training:
+  epochs: 100
+  patience: 50  # Early stopping patience
+  optimizer: "AdamW"  # Options: SGD, Adam, AdamW
+  lr0: 0.01  # Initial learning rate
+  lrf: 0.01  # Final learning rate factor
+  save_period: 10  # Save checkpoint every n epochs
+  momentum: 0.937
+  weight_decay: 0.0005
+  warmup_epochs: 3.0
+  warmup_momentum: 0.8
+  warmup_bias_lr: 0.1
+  
+  # Loss weights
+  box_loss_gain: 7.5  # Box loss gain
+  seg_loss_gain: 1.0  # Segmentation loss gain
+  cls_loss_gain: 0.5  # Classification loss gain
+  dfl_loss_gain: 1.5  # Distribution focal loss gain
+
+# Inference Configuration
+inference:
+  conf_thresh: 0.25  # Confidence threshold
+  iou_thresh: 0.45   # NMS IoU threshold
+  max_det: 300       # Maximum detections per image
+  retina_masks: false  # Use high-res segmentation masks
+  
+# Evaluation Configuration
+evaluation:
+  iou_thresholds: [0.5, 0.55, 0.6, 0.65, 0.7, 0.75, 0.8, 0.85, 0.9, 0.95]
+  beta: 2  # Beta for F-beta score (F2 score)
+  save_predictions: true
+  save_visualizations: true
+  
+# Hardware Configuration
+device: 0  # GPU device id (or 'cpu')
+amp: true  # Automatic mixed precision training
+cache: false  # Cache images in memory
+rect: false  # Rectangular training (variable aspect ratio)
+
+# Paths
+paths:
+  project: "runs/segment"
+  name: "ship_detection"
+  exist_ok: false  # Overwrite existing project/name
+  save_dir: null  # Override save directory
