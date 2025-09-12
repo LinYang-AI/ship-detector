@@ -4,7 +4,7 @@
 
 A comprehensive computer vision pipeline for ship detection and segmentation in satellite imagery, implementing multiple state-of-the-art approaches. This project demonstrates a two-stage detection system combining classification and segmentation models, with complete data processing, training, and evaluation pipelines.
 
- **Dataset** : [Airbus Ship Detection Challenge](https://www.kaggle.com/competitions/airbus-ship-detection)
+ **Dataset** : Airbus Ship Detection Challenge from Kaggle: https://www.kaggle.com/competitions/airbus-ship-detection
 
  **Task** : Detect and segment ships in satellite images using RLE-encoded masks
 
