@@ -1,8 +1,5 @@
-from ship_detector.scripts.train_vit import train_vit_model
+from ship_detector.scripts.trainer import train_vit_model, train_unet_model, train_sam_model, train_yolov8_model
 from ship_detector.scripts.utils import get_args, get_task
-from ship_detector.scripts.train_unet import train_unet_model
-from ship_detector.scripts.inference_pipeline import run_inference
-from ship_detector.scripts.train_sam import train_sam_model
 
 def main():
     args = get_args()
@@ -25,11 +22,11 @@ def main():
                 config_path=args.config,
                 output_dir=args.output_dir,
             )
-
-        case "inference":
-            run_inference(
-                inference_cfg_path=args.config,
-                output_dir=args.output_dir,
+        
+        case "train_yolo":
+            train_yolov8_model(
+                config_path=args.config,
+                data_path=args.output_dir,
             )
 
 
