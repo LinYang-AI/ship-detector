@@ -412,7 +412,7 @@ def get_augmentation_transforms(config: Dict[str, Any]) -> Tuple[transforms.Comp
     return transforms.Compose(train_transforms), transforms.Compose(val_transforms)
 
 
-def create_data_loader(config: Dict[str, Any]) -> Tuple[DataLoader, DataLoader]:
+def create_vit_data_loader(config: Dict[str, Any]) -> Tuple[DataLoader, DataLoader]:
     """Create training and validation data loaders"""
     # Load manifest
     df = pd.read_csv(config['data']['manifest_path'])

@@ -562,7 +562,7 @@ def handle_multi_ship_instances(mask: np.ndarray, min_ship_size: int = 10) -> np
     return filtered_mask
 
 
-def create_data_loaders(config: Dict[str, Any]) -> Tuple[DataLoader, DataLoader]:
+def create_unet_data_loaders(config: Dict[str, Any]) -> Tuple[DataLoader, DataLoader]:
     """Create training and validation data loaders for segmentation."""
     
     # Load manifest

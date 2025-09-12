@@ -261,35 +261,3 @@ def visualize_predictions(image_path: str, results, output_path: str):
     logger.info(f"Saved visualization to {output_path}")
     
 
-def run_yolo(
-    config_path: str, 
-    data_path: str, 
-    mode: Literal['train', 'val', 'predict', 'export'] = 'train', 
-    weights_path: str | None = None, 
-    img_source: str | None = None, 
-    resume: bool = False, 
-    export_format: Literal['onnx', 'torchscript', 'coreml', 'tflite'] = 'torchscript'):
-    
-    yolo = YOLOShipSegmentation(config_path)
-    
-    if mode == 'train':
-        yolo.train(data_path, resume)
-    elif mode == 'val':
-        yolo.validate(data_path, weights_path)
-    elif mode == 'predict':
-        if not img_source:
-            raise ValueError("'img_source' required for prediction")
-        if weights_path:
-            yolo.model = YOLO(weights_path)
-        
-        results = yolo.predict(img_source)
-        
-        # Visualize results
-        output_path = f"prediction_{Path(img_source).stem}.jpg"
-        visualize_predictions(img_source, results, output_path)
-    
-    elif mode == 'export':
-        # Export model
-        if weights_path:
-            yolo.model = YOLO(weights_path)
-        yolo.export_model(export_format)
