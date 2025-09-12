@@ -132,7 +132,7 @@ Epoch 17/40:
 
 ```bash
 # Clone repository
-git clone https://github.com/yourusername/ship-detection-pipeline.git
+git clone https://github.com/LinYang-AI/ship-detector.git
 cd ship-detection-pipeline
 
 # Create virtual environment
