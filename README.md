@@ -110,11 +110,10 @@ A comprehensive computer vision pipeline for ship detection and segmentation in 
 
 ```
 Epoch 17/40:
-├── Training Accuracy: 97.6%
-├── Validation Accuracy: 97.6%
-├── Training Loss: 0.11
-|── Validation Loss: 0.09
-└── Training Speed: 28,600 patches/second (RTX 5060Ti 16Gb)
+├── Training Accuracy: 98.7%
+├── Validation Accuracy: 98.4%
+├── Validation F1 Score: 0.99
+└── Inference Speed: 46,900 patches/second (RTX 5060Ti 16Gb)
 ```
 
 *Note: Full training was limited by computational resources. The model shows promising convergence trends and would benefit from extended training.*
@@ -145,8 +144,6 @@ pip install -r requirements.txt
 # Optional: Install SAM
 pip install git+https://github.com/facebookresearch/segment-anything.git
 ```
-
-
 
 ### 🎮 Usage
 
