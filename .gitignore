@@ -214,3 +214,10 @@ outputs/
 *.csv
 *.tif
 *.png
+
+runs/
+test_output/
+lightning_logs/
+model_states/
+checkpoints/
+YOLOv8/
