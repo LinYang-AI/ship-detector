@@ -11,9 +11,18 @@ from ultralytics import YOLO
 import cv2
 from tqdm import tqdm
 from ship_detector.scripts.utils import load_config
+import mlflow
+# from ultralytics.yolo.engine.callbacks import Callback
+from ultralytics import settings
+from dot_env import load_dotenv
+
+load_dotenv()
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+settings.update(os.getenv("ultralytics_settings", {}))
+mlflow.set_tracking_uri(os.getenv("mlflow_tracking_uri"))
 
 
 class YOLOShipSegmentation:
