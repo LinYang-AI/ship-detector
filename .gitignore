@@ -221,3 +221,7 @@ lightning_logs/
 model_states/
 checkpoints/
 YOLOv8/
+
+*.pt
+.env
+*.ipynb
