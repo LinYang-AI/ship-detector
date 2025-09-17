@@ -12,7 +12,7 @@ from ultralytics import YOLO
 from ship_detector.scripts.train_vit import create_vit_data_loader, ViTShipClassifier
 from ship_detector.scripts.train_unet import create_unet_data_loaders, UNetShipSegmentation
 from ship_detector.scripts.train_sam import SAMShipSegmentation, ShipSAMDataset, collate_fn_sam
-from ship_detector.scripts.train_yolo_seg import YOLOShipSegmentation, run_yolo, visualize_predictions
+from ship_detector.scripts.train_yolo_seg import YOLOShipSegmentation, visualize_predictions
 from ship_detector.scripts.utils import load_config
 
 from segment_anything.utils.transforms import ResizeLongestSide
@@ -253,11 +253,13 @@ def train_yolov8_model(
     mode: Literal['train', 'val', 'predict', 'export'] = 'train', 
     weights_path: str | None = None, 
     img_source: str | None = None, 
-    resume: bool = False, 
+    resume: bool = False,
+    checkpoint_path: str | None = None,
     export_format: Literal['onnx', 'torchscript', 'coreml', 'tflite'] = 'torchscript'):
     
     yolo = YOLOShipSegmentation(config_path)
-    
+    if checkpoint_path:
+        yolo.model = YOLO(checkpoint_path)
     if mode == 'train':
         yolo.train(data_path, resume)
     elif mode == 'val':
